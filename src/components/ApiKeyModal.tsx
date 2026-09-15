@@ -35,7 +35,7 @@ export default function ApiKeyModal({ currentKey, onSave, onSkip, onClear }: Api
               value={value}
               onChange={(e) => setValue(e.target.value)}
               placeholder="sk-or-v1-…"
-              className="w-full rounded-md border border-border bg-panel-raised px-3 py-2 pr-16 text-sm text-text placeholder:text-text-dim focus:border-accent focus:outline-none"
+              className="w-full rounded-md border border-border bg-panel-raised px-3 py-2 pr-16 text-sm text-text placeholder:text-text-dim input-glow"
             />
             <button
               type="button"
@@ -77,7 +77,7 @@ export default function ApiKeyModal({ currentKey, onSave, onSkip, onClear }: Api
             <button
               type="submit"
               disabled={!value.trim()}
-              className="rounded-md border border-accent-dim bg-accent-soft px-3 py-1.5 text-xs font-medium text-accent transition-colors hover:bg-accent-dim/30 disabled:cursor-not-allowed disabled:border-border disabled:bg-transparent disabled:text-text-dim"
+              className="rounded-md border border-accent-dim bg-accent-soft px-3 py-1.5 text-xs font-medium text-accent transition-colors hover:bg-accent-dim/30 btn-glow disabled:cursor-not-allowed disabled:border-border disabled:bg-transparent disabled:text-text-dim"
             >
               Save key
             </button>

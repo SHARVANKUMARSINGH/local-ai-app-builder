@@ -71,8 +71,13 @@ export default function EditorPanel({
             }}
           />
         ) : (
-          <div className="flex h-full items-center justify-center text-sm text-text-dim">
-            Generated files will appear here
+          <div className="flex h-full items-center justify-center bg-base p-8">
+            <div className="glow-lg glow-breathe max-w-xs rounded-xl border border-border-soft px-8 py-7 text-center">
+              <p className="text-sm text-text">Nothing built yet</p>
+              <p className="mt-1.5 text-xs leading-relaxed text-text-dim">
+                Describe an app on the left. Generated code will open here, ready to read or edit.
+              </p>
+            </div>
           </div>
         )}
       </div>

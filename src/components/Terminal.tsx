@@ -26,10 +26,10 @@ const Terminal = forwardRef<TerminalHandle>(function Terminal(_props, ref) {
       fontFamily: '"JetBrains Mono", ui-monospace, Menlo, Consolas, monospace',
       fontSize: 13,
       theme: {
-        background: "#0b0d10",
-        foreground: "#e6e8eb",
-        cursor: "#f2a93b",
-        selectionBackground: "#3a2c14",
+        background: "#050505",
+        foreground: "#f2f2f2",
+        cursor: "#ffffff",
+        selectionBackground: "#2a2a2a",
       },
     });
     const fitAddon = new FitAddon();

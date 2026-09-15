@@ -65,19 +65,43 @@ OpenRouter hosts.
 
 1. **Boot** (`src/lib/webcontainerManager.ts`) -- `WebContainer.boot()` runs
    once on page load (cached at module scope so React StrictMode's
-   double-invoke in dev doesn't try to boot twice, which throws).
-2. **Generate** (`src/lib/openrouter.ts`) -- the prompt is sent to OpenRouter
-   with a system prompt that asks for a JSON `{ files, summary }` payload; the
-   response is parsed and validated into `ProjectFile[]`.
+   double-invoke in dev doesn't try to boot twice, which throws). This
+   happens on every screen size, including mobile -- see "Mobile" below.
+2. **Generate** (`src/lib/openrouter.ts`) -- the prompt is sent to
+   `openrouter/free` (OpenRouter's own free-tier router model, so this
+   doesn't rot the way a hardcoded `some-model:free` id does when that
+   specific free listing gets pulled) with a system prompt that asks for a
+   JSON `{ files, commands, summary }` payload; the response is parsed and
+   validated.
 3. **Mount + run** -- the first generation mounts the files into the
    WebContainer's virtual filesystem, then spawns `npm install` followed by
    `npm run dev`, streaming combined stdout/stderr into the Xterm panel.
    `container.on('server-ready', ...)` fires with the live preview URL, which
    is dropped straight into the iframe.
-4. **Iterate** -- later prompts hot-write the changed files directly into the
-   already-running container (`writeFiles`), so Vite's own dev server/HMR
-   picks them up without a full reinstall. Editing a file by hand in Monaco
-   does the same.
+4. **Iterate** -- follow-up prompts send the AI the full current contents of
+   every file as context (see `renderExistingFiles` in `openrouter.ts`), so
+   it's genuinely reading and editing the running project -- the virtual
+   filesystem, the same code visible in Monaco -- rather than regenerating
+   blind. It can also return a `commands` array (e.g. `npm install axios`)
+   which runs for real in the WebContainer's terminal via `runCommands` in
+   `webcontainerManager.ts`. Editing a file by hand in Monaco hot-writes it
+   the same way.
+
+### Virtual Files tab
+
+The right panel has two tabs: **Preview** (the live iframe) and **Files** --
+a read-only tree view of every file currently mounted in the WebContainer
+(`src/components/FileTree.tsx`), built straight from the same file list the
+editor and the AI operate on. Clicking a file opens it in Monaco.
+
+### Mobile
+
+Below the `md` breakpoint, only the chat panel renders -- no editor, no
+terminal. The WebContainer boot/install/dev-server pipeline in `App.tsx`
+doesn't change at all; it's the exact same code path regardless of screen
+size. The chat panel just gains a slim status strip (phase + a link once the
+preview URL is live) so there's still a visible signal of what's happening in
+the background.
 
 ## Cross-origin isolation
 

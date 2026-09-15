@@ -103,3 +103,41 @@ export async function writeFiles(container: WebContainer, files: ProjectFile[]):
     await container.fs.writeFile(file.path, file.contents);
   }
 }
+
+/** Splits a shell command string into argv, respecting simple "quoted" and
+ *  'quoted' segments. Good enough for the kind of commands the model is
+ *  asked to produce (`npm install foo`, `npm install -D foo bar`) — not a
+ *  full shell parser. */
+function tokenizeCommand(command: string): string[] {
+  const tokens: string[] = [];
+  const regex = /"([^"]*)"|'([^']*)'|(\S+)/g;
+  let match: RegExpExecArray | null;
+  while ((match = regex.exec(command)) !== null) {
+    tokens.push(match[1] ?? match[2] ?? match[3]);
+  }
+  return tokens;
+}
+
+/**
+ * Runs a list of shell commands inside the container sequentially, streaming
+ * combined stdout/stderr to `onOutput`. Used for AI-requested follow-up
+ * actions like `npm install <package>` on an already-running project — this
+ * is what lets the AI actually drive the terminal, not just the filesystem.
+ */
+export async function runCommands(
+  container: WebContainer,
+  commands: string[],
+  onOutput: (chunk: string) => void
+): Promise<void> {
+  for (const command of commands) {
+    const [cmd, ...args] = tokenizeCommand(command);
+    if (!cmd) continue;
+    onOutput(`\r\n$ ${command}\r\n`);
+    const proc = await container.spawn(cmd, args);
+    proc.output.pipeTo(new WritableStream({ write: (chunk) => onOutput(chunk) }));
+    const exit = await proc.exit;
+    if (exit !== 0) {
+      onOutput(`\r\n\x1b[31m"${command}" exited with code ${exit}\x1b[0m\r\n`);
+    }
+  }
+}

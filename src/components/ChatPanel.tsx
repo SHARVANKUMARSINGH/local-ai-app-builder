@@ -1,5 +1,6 @@
 import { useState, type FormEvent, type KeyboardEvent } from "react";
-import type { ChatMessage } from "../types";
+import type { BootPhase, ChatMessage } from "../types";
+import { OPENROUTER_MODEL } from "../lib/openrouter";
 
 interface ChatPanelProps {
   messages: ChatMessage[];
@@ -7,7 +8,19 @@ interface ChatPanelProps {
   onSend: (prompt: string) => void;
   apiKeyPresent: boolean;
   onManageApiKey: () => void;
+  phase: BootPhase;
+  serverUrl: string | null;
 }
+
+const PHASE_LABEL: Record<BootPhase, string> = {
+  idle: "Idle",
+  booting: "Booting…",
+  mounting: "Mounting files…",
+  installing: "Installing…",
+  starting: "Starting dev server…",
+  ready: "Live",
+  error: "Error",
+};
 
 export default function ChatPanel({
   messages,
@@ -15,6 +28,8 @@ export default function ChatPanel({
   onSend,
   apiKeyPresent,
   onManageApiKey,
+  phase,
+  serverUrl,
 }: ChatPanelProps) {
   const [draft, setDraft] = useState("");
 
@@ -35,23 +50,52 @@ export default function ChatPanel({
 
   return (
     <div className="flex h-full flex-col bg-panel">
-      <div className="flex items-center gap-2 border-b border-border px-4 py-3">
-        <span className="h-2 w-2 rounded-full bg-accent" />
-        <h1 className="text-sm font-medium tracking-tight text-text">local-ai-app-builder</h1>
-        <button
-          onClick={onManageApiKey}
-          className="ml-auto flex items-center gap-1.5 text-[11px] text-text-dim hover:text-text-muted"
-        >
-          <span className={`h-1.5 w-1.5 rounded-full ${apiKeyPresent ? "bg-success" : "bg-text-dim"}`} />
-          {apiKeyPresent ? "API key set" : "Add API key"}
-        </button>
+      <div className="border-b border-border px-4 py-3">
+        <div className="flex items-center gap-2">
+          <span className="glow h-2 w-2 rounded-full bg-white" />
+          <h1 className="text-sm font-medium tracking-tight text-text">local-ai-app-builder</h1>
+          <button
+            onClick={onManageApiKey}
+            className="ml-auto flex items-center gap-1.5 text-[11px] text-text-dim hover:text-text-muted"
+          >
+            <span className={`h-1.5 w-1.5 rounded-full ${apiKeyPresent ? "glow bg-white" : "bg-text-dim"}`} />
+            {apiKeyPresent ? "API key set" : "Add API key"}
+          </button>
+        </div>
+        <p className="mt-1 text-[10px] tracking-wide text-text-dim">{OPENROUTER_MODEL} · no cost</p>
+      </div>
+
+      {/* Mobile-only status strip: on small screens there's no editor/terminal
+          in view, but the WebContainer pipeline is still running in the
+          background — this is the only visible signal of that on mobile. */}
+      <div className="flex items-center gap-2 border-b border-border px-4 py-2 md:hidden">
+        <span
+          className={
+            phase === "error"
+              ? "h-1.5 w-1.5 rounded-full bg-error"
+              : phase === "ready"
+                ? "glow h-1.5 w-1.5 rounded-full bg-white"
+                : "glow status-dot-pulse h-1.5 w-1.5 rounded-full bg-white"
+          }
+        />
+        <span className="text-[11px] text-text-muted">{PHASE_LABEL[phase]}</span>
+        {phase === "ready" && serverUrl && (
+          <a
+            href={serverUrl}
+            target="_blank"
+            rel="noreferrer"
+            className="ml-auto text-[11px] text-text underline underline-offset-2"
+          >
+            Open live preview ↗
+          </a>
+        )}
       </div>
 
       <div className="flex-1 space-y-4 overflow-y-auto px-4 py-4">
         {messages.length === 0 && (
           <p className="text-sm leading-relaxed text-text-muted">
-            Describe the app you want. The first message boots a project in the panel to the
-            right — installs dependencies, starts the dev server, and shows you the live result.
+            Describe the app you want. The first message boots a project — installs
+            dependencies, starts the dev server, and shows you the live result.
           </p>
         )}
 
@@ -71,7 +115,7 @@ export default function ChatPanel({
 
         {isGenerating && (
           <div className="flex items-center gap-2 text-xs text-text-dim">
-            <span className="h-1.5 w-1.5 rounded-full bg-accent status-dot-pulse" />
+            <span className="glow status-dot-pulse h-1.5 w-1.5 rounded-full bg-white" />
             Generating…
           </div>
         )}
@@ -84,14 +128,14 @@ export default function ChatPanel({
           onKeyDown={onKeyDown}
           placeholder="Build a pomodoro timer with a settings drawer…"
           rows={3}
-          className="w-full resize-none rounded-md border border-border bg-panel-raised px-3 py-2 text-sm text-text placeholder:text-text-dim focus:border-accent focus:outline-none"
+          className="input-glow w-full resize-none rounded-md border border-border bg-panel-raised px-3 py-2 text-sm text-text placeholder:text-text-dim"
         />
         <div className="mt-2 flex items-center justify-between">
           <span className="text-[11px] text-text-dim">Enter to send · Shift+Enter for newline</span>
           <button
             type="submit"
             disabled={isGenerating || !draft.trim()}
-            className="rounded-md border border-accent-dim bg-accent-soft px-3 py-1.5 text-xs font-medium text-accent transition-colors hover:bg-accent-dim/30 disabled:cursor-not-allowed disabled:border-border disabled:bg-transparent disabled:text-text-dim"
+            className="btn-glow rounded-md border border-accent-dim bg-accent-soft px-3 py-1.5 text-xs font-medium text-text transition-colors hover:bg-white hover:text-black disabled:cursor-not-allowed disabled:border-border disabled:bg-transparent disabled:text-text-dim disabled:hover:bg-transparent disabled:hover:text-text-dim"
           >
             {isGenerating ? "Working…" : "Send"}
           </button>
