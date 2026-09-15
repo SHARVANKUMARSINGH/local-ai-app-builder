@@ -29,7 +29,6 @@ no backend server required.
 
 ```bash
 npm install
-cp .env.local.example .env.local   # then paste your OpenRouter key in
 npm run dev
 ```
 
@@ -37,10 +36,24 @@ Open the printed `localhost` URL. **Use a Chromium-based browser** (Chrome,
 Edge, Arc) -- WebContainers currently require `SharedArrayBuffer`, which needs
 the page to be cross-origin isolated; Firefox/Safari support is inconsistent.
 
-If you skip the `.env.local` step, the app still works end-to-end: it falls
-back to a local starter template (see `src/lib/projectTemplate.ts`) instead of
-calling the AI, so you can verify the WebContainer pipeline before wiring up a
-real key.
+On first load you'll get a small popup asking for your OpenRouter API key.
+That key is saved only in **that browser's localStorage** and is sent
+straight from the browser to OpenRouter -- it never touches a server of ours,
+which matters because this is a static, backend-less app. You can reopen the
+popup any time from the "Add API key" / "API key set" button in the chat
+panel's header, to replace or remove it.
+
+If you skip the popup, the app still works end-to-end: it falls back to a
+local starter template (see `src/lib/projectTemplate.ts`) instead of calling
+the AI, so you can verify the WebContainer pipeline before wiring up a real
+key.
+
+There's also a `.env.local` option (`VITE_OPENROUTER_API_KEY`) for solo local
+dev -- it's checked as a fallback if no key is saved in localStorage. **Don't
+rely on it for anything you deploy publicly**: Vite bakes `VITE_*` env vars
+literally into the shipped JS bundle, so anyone visiting your deployed site
+could read it out of the network tab. The localStorage popup exists
+specifically to avoid that.
 
 ### Getting an OpenRouter key
 

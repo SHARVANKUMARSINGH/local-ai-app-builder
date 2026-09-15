@@ -1,6 +1,7 @@
 import OpenAI from "openai";
 import type { ProjectFile } from "../types";
 import { getBaseTemplateFiles } from "./projectTemplate";
+import { getStoredApiKey } from "./apiKeyStore";
 
 /**
  * ── OpenRouter configuration ────────────────────────────────────────────────
@@ -8,27 +9,37 @@ import { getBaseTemplateFiles } from "./projectTemplate";
  * works as-is — you just point `baseURL` at OpenRouter and use an OpenRouter
  * API key instead of an OpenAI one.
  *
- * ⚠️  PLACEHOLDER — put your own key here, or (safer) read it from an env
- * var via Vite's `import.meta.env`. Never commit a real key to git.
- *   1. Create a `.env.local` file in the project root (already git-ignored):
- *        VITE_OPENROUTER_API_KEY=sk-or-v1-...
- *   2. Restart `npm run dev` so Vite picks up the new env var.
+ * This app is a pure static SPA with no backend, so there's no way to keep a
+ * key truly secret from the person using it anyway. Given that, the key is
+ * resolved in this priority order:
+ *   1. localStorage, set via the in-app "Add your API key" popup
+ *      (src/components/ApiKeyModal.tsx) — lives only in that browser.
+ *   2. VITE_OPENROUTER_API_KEY from `.env.local` — convenient for solo local
+ *      dev, but be aware Vite bakes this literally into the shipped JS
+ *      bundle, so don't rely on it for a key you deploy publicly.
  */
-const OPENROUTER_API_KEY: string =
-  import.meta.env.VITE_OPENROUTER_API_KEY ?? "REPLACE_WITH_YOUR_OPENROUTER_API_KEY";
-
 const OPENROUTER_MODEL = "anthropic/claude-3.5-sonnet";
 
-const client = new OpenAI({
-  baseURL: "https://openrouter.ai/api/v1",
-  apiKey: OPENROUTER_API_KEY,
-  // Required for OpenRouter to accept requests made directly from a browser.
-  dangerouslyAllowBrowser: true,
-  defaultHeaders: {
-    "HTTP-Referer": "https://localhost",
-    "X-Title": "local-ai-app-builder",
-  },
-});
+function resolveApiKey(): string {
+  return (
+    getStoredApiKey() ??
+    import.meta.env.VITE_OPENROUTER_API_KEY ??
+    "REPLACE_WITH_YOUR_OPENROUTER_API_KEY"
+  );
+}
+
+function createClient(apiKey: string): OpenAI {
+  return new OpenAI({
+    baseURL: "https://openrouter.ai/api/v1",
+    apiKey,
+    // Required for OpenRouter to accept requests made directly from a browser.
+    dangerouslyAllowBrowser: true,
+    defaultHeaders: {
+      "HTTP-Referer": "https://localhost",
+      "X-Title": "local-ai-app-builder",
+    },
+  });
+}
 
 const SYSTEM_PROMPT = `You are an expert React + Vite engineer working inside an in-browser code generator.
 
@@ -64,6 +75,13 @@ export interface GenerationResult {
 
 function isPlaceholderKey(key: string): boolean {
   return !key || key.startsWith("REPLACE_WITH_") || key === "sk-or-v1-your-key-here";
+}
+
+/** Whether a real (non-placeholder) key is currently available from either
+ *  localStorage or the build-time env var. Used to decide whether to show
+ *  the "add your API key" popup on load. */
+export function hasUsableApiKey(): boolean {
+  return !isPlaceholderKey(resolveApiKey());
 }
 
 /** Best-effort extraction of a JSON object from a model response that may be
@@ -108,15 +126,18 @@ function normalizeFiles(parsed: unknown): { files: ProjectFile[]; summary: strin
  * pipeline (mount → install → dev server) stays testable end to end.
  */
 export async function generateProjectFromPrompt(prompt: string): Promise<GenerationResult> {
-  if (isPlaceholderKey(OPENROUTER_API_KEY)) {
+  const apiKey = resolveApiKey();
+
+  if (isPlaceholderKey(apiKey)) {
     console.warn(
-      "[openrouter] No API key configured — set VITE_OPENROUTER_API_KEY in .env.local. " +
-        "Falling back to the local starter template."
+      "[openrouter] No API key configured — add one via the popup, or set " +
+        "VITE_OPENROUTER_API_KEY in .env.local. Falling back to the local starter template."
     );
     return { ...getBaseTemplateFiles(prompt), usedFallback: true };
   }
 
   try {
+    const client = createClient(apiKey);
     const completion = await client.chat.completions.create({
       model: OPENROUTER_MODEL,
       temperature: 0.3,

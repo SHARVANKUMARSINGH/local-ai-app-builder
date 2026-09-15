@@ -3,8 +3,10 @@ import type { WebContainer } from "@webcontainer/api";
 import ChatPanel from "./components/ChatPanel";
 import EditorPanel from "./components/EditorPanel";
 import PreviewPanel from "./components/PreviewPanel";
+import ApiKeyModal from "./components/ApiKeyModal";
 import type { TerminalHandle } from "./components/Terminal";
-import { generateProjectFromPrompt } from "./lib/openrouter";
+import { generateProjectFromPrompt, hasUsableApiKey } from "./lib/openrouter";
+import { getStoredApiKey, setStoredApiKey, clearStoredApiKey } from "./lib/apiKeyStore";
 import { bootWebContainer, mountAndRun, writeFiles } from "./lib/webcontainerManager";
 import type { BootPhase, ChatMessage, ProjectFile } from "./types";
 
@@ -18,6 +20,8 @@ export default function App() {
   const [isGenerating, setIsGenerating] = useState(false);
   const [phase, setPhase] = useState<BootPhase>("idle");
   const [serverUrl, setServerUrl] = useState<string | null>(null);
+  const [apiKeyModalOpen, setApiKeyModalOpen] = useState(() => !hasUsableApiKey());
+  const [hasKey, setHasKey] = useState(hasUsableApiKey);
 
   const containerRef = useRef<WebContainer | null>(null);
   const terminalRef = useRef<TerminalHandle>(null);
@@ -87,6 +91,22 @@ export default function App() {
     }
   }, [appendMessage]);
 
+  const handleSaveApiKey = useCallback((key: string) => {
+    setStoredApiKey(key);
+    setHasKey(true);
+    setApiKeyModalOpen(false);
+  }, []);
+
+  const handleSkipApiKey = useCallback(() => {
+    setApiKeyModalOpen(false);
+  }, []);
+
+  const handleClearApiKey = useCallback(() => {
+    clearStoredApiKey();
+    setHasKey(hasUsableApiKey());
+    setApiKeyModalOpen(true);
+  }, []);
+
   const handleChangeContents = useCallback((path: string, contents: string) => {
     setFiles((prev) => prev.map((f) => (f.path === path ? { ...f, contents } : f)));
     const container = containerRef.current;
@@ -97,8 +117,23 @@ export default function App() {
 
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-base text-text">
+      {apiKeyModalOpen && (
+        <ApiKeyModal
+          currentKey={getStoredApiKey()}
+          onSave={handleSaveApiKey}
+          onSkip={handleSkipApiKey}
+          onClear={handleClearApiKey}
+        />
+      )}
+
       <aside className="w-[340px] shrink-0 border-r border-border">
-        <ChatPanel messages={messages} isGenerating={isGenerating} onSend={handleSend} />
+        <ChatPanel
+          messages={messages}
+          isGenerating={isGenerating}
+          onSend={handleSend}
+          apiKeyPresent={hasKey}
+          onManageApiKey={() => setApiKeyModalOpen(true)}
+        />
       </aside>
 
       <main className="min-w-0 flex-1 border-r border-border">

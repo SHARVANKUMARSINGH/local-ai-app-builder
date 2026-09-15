@@ -5,9 +5,17 @@ interface ChatPanelProps {
   messages: ChatMessage[];
   isGenerating: boolean;
   onSend: (prompt: string) => void;
+  apiKeyPresent: boolean;
+  onManageApiKey: () => void;
 }
 
-export default function ChatPanel({ messages, isGenerating, onSend }: ChatPanelProps) {
+export default function ChatPanel({
+  messages,
+  isGenerating,
+  onSend,
+  apiKeyPresent,
+  onManageApiKey,
+}: ChatPanelProps) {
   const [draft, setDraft] = useState("");
 
   const submit = (e: FormEvent) => {
@@ -30,6 +38,13 @@ export default function ChatPanel({ messages, isGenerating, onSend }: ChatPanelP
       <div className="flex items-center gap-2 border-b border-border px-4 py-3">
         <span className="h-2 w-2 rounded-full bg-accent" />
         <h1 className="text-sm font-medium tracking-tight text-text">local-ai-app-builder</h1>
+        <button
+          onClick={onManageApiKey}
+          className="ml-auto flex items-center gap-1.5 text-[11px] text-text-dim hover:text-text-muted"
+        >
+          <span className={`h-1.5 w-1.5 rounded-full ${apiKeyPresent ? "bg-success" : "bg-text-dim"}`} />
+          {apiKeyPresent ? "API key set" : "Add API key"}
+        </button>
       </div>
 
       <div className="flex-1 space-y-4 overflow-y-auto px-4 py-4">
