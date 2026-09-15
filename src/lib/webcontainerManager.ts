@@ -104,7 +104,65 @@ export async function writeFiles(container: WebContainer, files: ProjectFile[]):
   }
 }
 
-/** Splits a shell command string into argv, respecting simple "quoted" and
+const EXCLUDED_DIRS = new Set(["node_modules", ".git", "dist", ".vite", ".cache"]);
+
+/**
+ * Recursively lists every file path (not directories) currently in the
+ * container's filesystem, skipping build/dependency directories. This backs
+ * the Files (VFS) tab, which reflects the REAL filesystem — including files
+ * a terminal command created that the AI never explicitly declared — rather
+ * than just the subset of files the app happens to be tracking in React
+ * state for the editor.
+ */
+export async function listProjectFiles(container: WebContainer, dir = "."): Promise<string[]> {
+  let entries;
+  try {
+    entries = await container.fs.readdir(dir, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+
+  const paths: string[] = [];
+  for (const entry of entries) {
+    if (EXCLUDED_DIRS.has(entry.name)) continue;
+    const path = dir === "." ? entry.name : `${dir}/${entry.name}`;
+    if (entry.isDirectory()) {
+      paths.push(...(await listProjectFiles(container, path)));
+    } else {
+      paths.push(path);
+    }
+  }
+  return paths;
+}
+
+/** Deletes the given paths (files or directories) from the container. */
+export async function deletePaths(container: WebContainer, paths: string[]): Promise<void> {
+  for (const path of paths) {
+    await container.fs.rm(path, { recursive: true, force: true });
+  }
+}
+
+/**
+ * Watches the whole project for filesystem changes (a terminal command
+ * creating a file, an AI-run command adding/removing something, etc.) and
+ * calls `onChange` — debounced — whenever something changes, so the Files
+ * tab can refresh itself instead of only updating when the app itself wrote
+ * a file. Returns the underlying watcher so the caller can `.close()` it.
+ */
+export function watchProject(container: WebContainer, onChange: () => void): { close: () => void } {
+  let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+  const scheduleRefresh = () => {
+    if (debounceTimer) clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(onChange, 300);
+  };
+  const watcher = container.fs.watch(".", { recursive: true }, () => scheduleRefresh());
+  return {
+    close: () => {
+      if (debounceTimer) clearTimeout(debounceTimer);
+      watcher.close();
+    },
+  };
+}/** Splits a shell command string into argv, respecting simple "quoted" and
  *  'quoted' segments. Good enough for the kind of commands the model is
  *  asked to produce (`npm install foo`, `npm install -D foo bar`) — not a
  *  full shell parser. */

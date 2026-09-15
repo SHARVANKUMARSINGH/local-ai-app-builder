@@ -1,5 +1,5 @@
 import { forwardRef, useState } from "react";
-import type { BootPhase, ProjectFile } from "../types";
+import type { BootPhase } from "../types";
 import Terminal, { type TerminalHandle } from "./Terminal";
 import FileTree from "./FileTree";
 
@@ -8,9 +8,10 @@ type Tab = "preview" | "files";
 interface PreviewPanelProps {
   phase: BootPhase;
   serverUrl: string | null;
-  files: ProjectFile[];
+  vfsPaths: string[];
   activePath: string | null;
   onSelectPath: (path: string) => void;
+  onRefreshVfs: () => void;
 }
 
 const PHASE_LABEL: Record<BootPhase, string> = {
@@ -31,7 +32,7 @@ function PhaseDot({ phase }: { phase: BootPhase }) {
 }
 
 const PreviewPanel = forwardRef<TerminalHandle, PreviewPanelProps>(function PreviewPanel(
-  { phase, serverUrl, files, activePath, onSelectPath },
+  { phase, serverUrl, vfsPaths, activePath, onSelectPath, onRefreshVfs },
   terminalRef
 ) {
   const [tab, setTab] = useState<Tab>("preview");
@@ -58,7 +59,7 @@ const PreviewPanel = forwardRef<TerminalHandle, PreviewPanelProps>(function Prev
           }
         >
           Files
-          {files.length > 0 && <span className="ml-1.5 text-text-dim">{files.length}</span>}
+          {vfsPaths.length > 0 && <span className="ml-1.5 text-text-dim">{vfsPaths.length}</span>}
         </button>
         <div className="ml-auto flex items-center gap-2 px-4">
           <PhaseDot phase={phase} />
@@ -88,7 +89,7 @@ const PreviewPanel = forwardRef<TerminalHandle, PreviewPanelProps>(function Prev
             </div>
           )
         ) : (
-          <FileTree files={files} activePath={activePath} onSelectFile={onSelectPath} />
+          <FileTree paths={vfsPaths} activePath={activePath} onSelectFile={onSelectPath} onRefresh={onRefreshVfs} />
         )}
       </div>
 

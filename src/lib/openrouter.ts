@@ -1,5 +1,5 @@
 import OpenAI from "openai";
-import type { ProjectFile } from "../types";
+import type { AiAction, ProjectFile } from "../types";
 import { getBaseTemplateFiles } from "./projectTemplate";
 import { getStoredApiKey } from "./apiKeyStore";
 
@@ -46,67 +46,85 @@ function createClient(apiKey: string): OpenAI {
   });
 }
 
+/**
+ * ── The strict action protocol ──────────────────────────────────────────────
+ * The AI never returns "a project" or "some files" loosely — it returns an
+ * ordered list of `actions`, each one of exactly three machine-checked
+ * shapes. This is what lets it drive the filesystem, the editor, AND the
+ * terminal from one response, and lets the UI render a precise action log
+ * (icons, "+2 files added", etc.) instead of guessing from prose.
+ *
+ *   { "type": "write_file",  "path": "src/App.tsx", "contents": "..." }
+ *   { "type": "delete_file", "path": "src/old.tsx" }
+ *   { "type": "run_command", "command": "npm install axios" }
+ *
+ * `normalizeResult` below rejects (throws on) anything that doesn't match
+ * one of these three shapes exactly — no partial/loose objects pass through.
+ */
+const RESPONSE_FORMAT_SPEC = `Respond with ONLY a JSON object (no markdown fences, no commentary, no text
+before or after it) matching EXACTLY this shape:
+
+{
+  "summary": "Markdown-formatted explanation of what you did, for the chat.",
+  "actions": [
+    { "type": "write_file", "path": "src/App.tsx", "contents": "...\\n" },
+    { "type": "delete_file", "path": "src/Unused.tsx" },
+    { "type": "run_command", "command": "npm install axios" }
+  ]
+}
+
+Strict rules for "actions" — every entry must be EXACTLY one of these three shapes,
+nothing else:
+  - write_file:  { "type": "write_file", "path": "<string>", "contents": "<string>" }
+  - delete_file: { "type": "delete_file", "path": "<string>" }
+  - run_command: { "type": "run_command", "command": "<string>" }
+- "path" is always relative to the project root, forward slashes, no leading "/".
+- "contents" on write_file is always the file's COMPLETE new contents (never a diff,
+  never "// ...rest unchanged").
+- Every other field name is invalid — do not add "description", "reason", etc. to an action.
+- "summary" may use Markdown (backticks, bold, lists) — it's rendered as Markdown in the UI.`;
+
 const INITIAL_SYSTEM_PROMPT = `You are an expert React + Vite engineer working inside an in-browser code generator.
 
 Given a user's request, respond with a SMALL, RUNNABLE React + TypeScript + Vite project
-that satisfies it. Respond with ONLY a JSON object (no markdown fences, no commentary)
-matching exactly this shape:
+that satisfies it, expressed entirely as "write_file" actions.
 
-{
-  "files": [
-    { "path": "package.json", "contents": "..." },
-    { "path": "index.html", "contents": "..." },
-    { "path": "vite.config.ts", "contents": "..." },
-    { "path": "src/main.tsx", "contents": "..." },
-    { "path": "src/App.tsx", "contents": "..." }
-  ],
-  "commands": [],
-  "summary": "One sentence describing what you built."
-}
+${RESPONSE_FORMAT_SPEC}
 
-Rules:
-- "path" values are relative to the project root, forward slashes only, no leading "/".
+Project rules:
 - Always include a valid "package.json" with a "dev" script ("vite") and correct dependencies.
 - Keep the dependency list minimal (react, react-dom, vite, @vitejs/plugin-react, typescript).
-- Write real, complete file contents — no "// ..." placeholders or TODOs.
+- Write real, complete file contents — no placeholders or TODOs.
 - Prefer functional components and inline styles or a single small CSS file; no external
   UI libraries unless the user explicitly asks for one.
 - The app must run standalone with \`npm install && npm run dev\`.
-- Leave "commands" empty on this initial generation — \`npm install\` already runs
-  automatically against the package.json you return.`;
+- Don't include any "run_command" actions on this initial generation — \`npm install\` already
+  runs automatically against the package.json you return.`;
 
 const ITERATION_SYSTEM_PROMPT = `You are an expert React + Vite engineer working inside an in-browser code generator.
 You are editing a project that is ALREADY mounted, installed, and running live in the
-user's browser (a WebContainer). The full current contents of every file in the project
-will be given to you as context. Read them before responding — you're editing this real,
-running codebase, not starting from scratch.
+user's browser (a WebContainer) — this is a real, running virtual filesystem, not a
+hypothetical one. The full current contents of every file will be given to you as
+context below. Read them before responding; you're editing this codebase, not starting over.
 
-Respond with ONLY a JSON object (no markdown fences, no commentary) matching exactly this
-shape:
+${RESPONSE_FORMAT_SPEC}
 
-{
-  "files": [ { "path": "src/App.tsx", "contents": "..." } ],
-  "commands": ["npm install some-package"],
-  "summary": "One sentence describing what you changed."
-}
-
-Rules:
-- In "files", include ONLY files that are new or whose contents changed. Do not resend
-  unchanged files. Each file's "contents" must be the COMPLETE new contents of that file,
-  not a diff or a snippet.
-- Use "commands" for anything that needs to run in the project's terminal to make your
-  change work — most commonly \`npm install <package>\` when you import something not
-  already in package.json (also update package.json's "dependencies" to match). Only
-  include commands that are actually necessary; leave the array empty otherwise.
-- If you add a dependency, you do not need to run \`npm install\` with no arguments —
-  only install the new package(s) by name so the existing install isn't repeated.
-- Never rewrite package.json's "dev"/"scripts" section unless the user explicitly asks
-  for a different tool or setup.
+Editing rules:
+- Only emit "write_file" for files that are new or whose contents actually changed —
+  never resend an unchanged file.
+- Use "delete_file" to remove a file the user asked to remove, or one your change makes
+  obsolete. Deleting is real: it runs \`rm\` in the container and drops the file from the
+  editor and file tree.
+- Use "run_command" for anything that needs to happen in the terminal for your change to
+  work — most commonly \`npm install <package>\` when you import something new (also add it
+  to package.json's "dependencies" yourself in a write_file action; don't rely on the
+  install to update package.json for you). Only include commands that are truly necessary.
+- Never touch package.json's "scripts" unless the user explicitly asks for a different
+  dev tool or setup.
 - Keep changes scoped to what the user asked for.`;
 
 export interface GenerationResult {
-  files: ProjectFile[];
-  commands: string[];
+  actions: AiAction[];
   summary: string;
   usedFallback: boolean;
 }
@@ -133,29 +151,44 @@ function extractJson(raw: string): unknown {
   return JSON.parse(candidate.slice(start, end + 1));
 }
 
-function normalizeResult(parsed: unknown): { files: ProjectFile[]; commands: string[]; summary: string } {
-  if (
-    typeof parsed !== "object" ||
-    parsed === null ||
-    !Array.isArray((parsed as { files?: unknown }).files)
-  ) {
-    throw new Error("Model response did not match the expected { files, summary } shape");
+/** Strictly validates one action against the write_file / delete_file /
+ *  run_command shapes — anything else throws, rather than being silently
+ *  dropped or guessed at. This is the enforcement point for the "strict
+ *  system + JSON protocol" the AI is asked to follow. */
+function validateAction(raw: unknown, index: number): AiAction {
+  if (typeof raw !== "object" || raw === null) {
+    throw new Error(`actions[${index}] is not an object`);
   }
-  const raw = parsed as { files: unknown[]; commands?: unknown; summary?: unknown };
-  const files: ProjectFile[] = raw.files.map((f) => {
-    const file = f as { path?: unknown; contents?: unknown };
-    if (typeof file.path !== "string" || typeof file.contents !== "string") {
-      throw new Error("Malformed file entry in model response");
-    }
-    return { path: file.path.replace(/^\/+/, ""), contents: file.contents };
-  });
-  const commands: string[] = Array.isArray(raw.commands)
-    ? raw.commands.filter((c): c is string => typeof c === "string" && c.trim().length > 0)
-    : [];
+  const a = raw as Record<string, unknown>;
+
+  if (a.type === "write_file") {
+    if (typeof a.path !== "string" || !a.path) throw new Error(`actions[${index}] (write_file) missing "path"`);
+    if (typeof a.contents !== "string") throw new Error(`actions[${index}] (write_file) missing "contents"`);
+    return { type: "write_file", path: a.path.replace(/^\/+/, ""), contents: a.contents };
+  }
+  if (a.type === "delete_file") {
+    if (typeof a.path !== "string" || !a.path) throw new Error(`actions[${index}] (delete_file) missing "path"`);
+    return { type: "delete_file", path: a.path.replace(/^\/+/, "") };
+  }
+  if (a.type === "run_command") {
+    if (typeof a.command !== "string" || !a.command) throw new Error(`actions[${index}] (run_command) missing "command"`);
+    return { type: "run_command", command: a.command };
+  }
+  throw new Error(`actions[${index}] has unknown "type": ${JSON.stringify(a.type)}`);
+}
+
+function normalizeResult(parsed: unknown): { actions: AiAction[]; summary: string } {
+  if (typeof parsed !== "object" || parsed === null) {
+    throw new Error("Model response was not a JSON object");
+  }
+  const raw = parsed as { actions?: unknown; summary?: unknown };
+  if (!Array.isArray(raw.actions)) {
+    throw new Error('Model response is missing an "actions" array');
+  }
+  const actions = raw.actions.map(validateAction);
   return {
-    files,
-    commands,
-    summary: typeof raw.summary === "string" ? raw.summary : "Generated project.",
+    actions,
+    summary: typeof raw.summary === "string" ? raw.summary : "Done.",
   };
 }
 
@@ -173,19 +206,27 @@ function renderExistingFiles(files: ProjectFile[]): string {
     .join("\n\n");
 }
 
+function actionsFromTemplate(prompt: string): { actions: AiAction[]; summary: string } {
+  const { files, summary } = getBaseTemplateFiles(prompt);
+  return {
+    actions: files.map((f): AiAction => ({ type: "write_file", path: f.path, contents: f.contents })),
+    summary,
+  };
+}
+
 /**
  * Sends the user's natural-language prompt to the configured OpenRouter model
- * and returns a ready-to-mount set of file changes (and any terminal commands
- * needed to support them).
+ * and returns a strictly-validated, ordered list of actions (file writes,
+ * file deletes, and terminal commands) to apply.
  *
  * When `existingFiles` is non-empty, this runs in "iteration" mode: the full
  * current project is sent as context so the model can read and edit the real,
- * already-running codebase (the virtual filesystem, effectively) instead of
- * generating blind. With no existing files, it generates a fresh project.
+ * already-running codebase — the virtual filesystem — instead of generating
+ * blind. With no existing files, it generates a fresh project.
  *
  * If no real API key has been configured, or the request fails for any
- * reason, this falls back to a local starter template so the rest of the
- * pipeline (mount → install → dev server) stays testable end to end.
+ * reason, this falls back to a local starter template (as write_file actions)
+ * so the rest of the pipeline stays testable end to end.
  */
 export async function generateProjectFromPrompt(
   prompt: string,
@@ -200,11 +241,9 @@ export async function generateProjectFromPrompt(
         "VITE_OPENROUTER_API_KEY in .env.local. Falling back to the local starter template."
     );
     if (isIteration) {
-      // No sensible offline fallback for an edit to an unknown existing
-      // project — surface this clearly instead of silently no-op'ing.
-      return { files: [], commands: [], summary: "No API key configured — can't edit without one.", usedFallback: true };
+      return { actions: [], summary: "No API key configured — can't edit without one.", usedFallback: true };
     }
-    return { ...getBaseTemplateFiles(prompt), commands: [], usedFallback: true };
+    return { ...actionsFromTemplate(prompt), usedFallback: true };
   }
 
   try {
@@ -223,23 +262,20 @@ export async function generateProjectFromPrompt(
     });
 
     const raw = completion.choices[0]?.message?.content ?? "";
-    const { files, commands, summary } = normalizeResult(extractJson(raw));
-    if (files.length === 0 && commands.length === 0) {
-      throw new Error("Model returned no file changes or commands");
-    }
-    return { files, commands, summary, usedFallback: false };
+    const { actions, summary } = normalizeResult(extractJson(raw));
+    if (actions.length === 0) throw new Error("Model returned zero actions");
+    return { actions, summary, usedFallback: false };
   } catch (err) {
     console.error("[openrouter] Generation failed:", err);
     const message = err instanceof Error ? err.message : String(err);
     if (isIteration) {
       // Don't silently fall back to a throwaway template for an edit —
       // that would blow away the user's real, running project.
-      return { files: [], commands: [], summary: `Edit failed: ${message}`, usedFallback: false };
+      return { actions: [], summary: `Edit failed: ${message}`, usedFallback: false };
     }
-    const fallback = getBaseTemplateFiles(prompt);
+    const fallback = actionsFromTemplate(prompt);
     return {
       ...fallback,
-      commands: [],
       summary: `${fallback.summary} (AI call failed — showing a local fallback instead: ${message})`,
       usedFallback: true,
     };

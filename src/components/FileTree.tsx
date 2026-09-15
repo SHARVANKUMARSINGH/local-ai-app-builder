@@ -1,5 +1,4 @@
 import { useMemo, useState } from "react";
-import type { ProjectFile } from "../types";
 
 interface TreeNode {
   name: string;
@@ -8,11 +7,11 @@ interface TreeNode {
   children: TreeNode[];
 }
 
-function buildTree(files: ProjectFile[]): TreeNode[] {
+function buildTree(paths: string[]): TreeNode[] {
   const root: TreeNode = { name: "", path: "", isDir: true, children: [] };
 
-  for (const file of files) {
-    const parts = file.path.split("/").filter(Boolean);
+  for (const fullPath of paths) {
+    const parts = fullPath.split("/").filter(Boolean);
     let cursor = root;
     parts.forEach((part, i) => {
       const isLast = i === parts.length - 1;
@@ -112,13 +111,14 @@ function TreeRow({
 }
 
 interface FileTreeProps {
-  files: ProjectFile[];
+  paths: string[];
   activePath: string | null;
   onSelectFile: (path: string) => void;
+  onRefresh?: () => void;
 }
 
-export default function FileTree({ files, activePath, onSelectFile }: FileTreeProps) {
-  const tree = useMemo(() => buildTree(files), [files]);
+export default function FileTree({ paths, activePath, onSelectFile, onRefresh }: FileTreeProps) {
+  const tree = useMemo(() => buildTree(paths), [paths]);
   // All top-level directories start expanded so the tree isn't a wall of
   // collapsed folders on first open.
   const [expanded, setExpanded] = useState<Set<string>>(
@@ -134,27 +134,37 @@ export default function FileTree({ files, activePath, onSelectFile }: FileTreePr
     });
   };
 
-  if (files.length === 0) {
-    return (
-      <div className="flex h-full items-center justify-center text-xs text-text-dim">
-        No files mounted yet
-      </div>
-    );
-  }
-
   return (
-    <div className="h-full overflow-y-auto py-2">
-      {tree.map((node) => (
-        <TreeRow
-          key={node.path}
-          node={node}
-          depth={0}
-          activePath={activePath}
-          expanded={expanded}
-          onToggle={toggle}
-          onSelectFile={onSelectFile}
-        />
-      ))}
+    <div className="flex h-full flex-col">
+      {onRefresh && (
+        <div className="flex items-center justify-between border-b border-border-soft px-3 py-1.5">
+          <span className="text-[10px] uppercase tracking-wide text-text-dim">
+            Virtual filesystem
+          </span>
+          <button onClick={onRefresh} className="text-[11px] text-text-dim hover:text-text-muted">
+            Refresh
+          </button>
+        </div>
+      )}
+      {paths.length === 0 ? (
+        <div className="flex flex-1 items-center justify-center text-xs text-text-dim">
+          No files mounted yet
+        </div>
+      ) : (
+        <div className="flex-1 overflow-y-auto py-2">
+          {tree.map((node) => (
+            <TreeRow
+              key={node.path}
+              node={node}
+              depth={0}
+              activePath={activePath}
+              expanded={expanded}
+              onToggle={toggle}
+              onSelectFile={onSelectFile}
+            />
+          ))}
+        </div>
+      )}
     </div>
   );
 }

@@ -90,18 +90,45 @@ OpenRouter hosts.
 ### Virtual Files tab
 
 The right panel has two tabs: **Preview** (the live iframe) and **Files** --
-a read-only tree view of every file currently mounted in the WebContainer
-(`src/components/FileTree.tsx`), built straight from the same file list the
-editor and the AI operate on. Clicking a file opens it in Monaco.
+a tree view of the WebContainer's actual, real filesystem
+(`listProjectFiles` in `webcontainerManager.ts`), not just the subset the app
+happens to be tracking for the editor. A `container.fs.watch(".", {
+recursive: true })` watcher keeps it live -- a terminal command creating a
+file, `npm install` writing `package-lock.json`, an AI-run command -- any of
+those trigger a debounced refresh automatically. There's also a manual
+Refresh button. Clicking a file not yet open in Monaco lazy-loads its real
+contents from the container and opens it.
 
-### Mobile
+### The strict action protocol
 
-Below the `md` breakpoint, only the chat panel renders -- no editor, no
-terminal. The WebContainer boot/install/dev-server pipeline in `App.tsx`
-doesn't change at all; it's the exact same code path regardless of screen
-size. The chat panel just gains a slim status strip (phase + a link once the
-preview URL is live) so there's still a visible signal of what's happening in
-the background.
+The AI never returns "a project" loosely -- every response is validated
+against exactly three action shapes (`src/lib/openrouter.ts`):
+
+```json
+{ "type": "write_file",  "path": "src/App.tsx", "contents": "..." }
+{ "type": "delete_file", "path": "src/Old.tsx" }
+{ "type": "run_command", "command": "npm install axios" }
+```
+
+Anything that doesn't match one of these three shapes exactly is rejected.
+This is what lets one response touch the filesystem, the editor, and the
+terminal together -- `write_file`/`delete_file` cover the Files tool,
+`run_command` covers the Terminal tool. Applied actions show up in chat as
+small chips ("+2 Files added", "1 File edited", "$ npm install axios") built
+from `ActionLogEntry`s in `App.tsx`. The `summary` field is Markdown,
+rendered via `react-markdown` + `remark-gfm`.
+
+### Resizable panels & mobile workspace
+
+Desktop: drag the thin dividers between chat/editor/preview
+(`src/components/Resizer.tsx`) to resize them.
+
+Mobile (below the `md` breakpoint): only chat renders. Long-press (or
+right-click, which is the same `contextmenu` event) anywhere in the message
+list to open a menu -- Files / Preview / Terminal -- each opening full-screen
+(`MobileWorkspace.tsx`). The WebContainer pipeline itself doesn't change on
+mobile at all; it's the exact same code path as desktop, running in the
+background regardless of which panel (if any) is currently open.
 
 ## Cross-origin isolation
 

@@ -1,6 +1,10 @@
-import { useState, type FormEvent, type KeyboardEvent } from "react";
-import type { BootPhase, ChatMessage } from "../types";
+import { useState, type FormEvent, type KeyboardEvent, type MouseEvent } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+import type { ActionLogEntry, BootPhase, ChatMessage } from "../types";
 import { OPENROUTER_MODEL } from "../lib/openrouter";
+
+type WorkspaceTab = "files" | "preview" | "terminal";
 
 interface ChatPanelProps {
   messages: ChatMessage[];
@@ -10,6 +14,7 @@ interface ChatPanelProps {
   onManageApiKey: () => void;
   phase: BootPhase;
   serverUrl: string | null;
+  onOpenMobileWorkspace: (tab: WorkspaceTab) => void;
 }
 
 const PHASE_LABEL: Record<BootPhase, string> = {
@@ -22,6 +27,35 @@ const PHASE_LABEL: Record<BootPhase, string> = {
   error: "Error",
 };
 
+/** Groups an action log into count-based chips ("+2 Files added") for the
+ *  file actions, and one chip per command (commands are heterogeneous, so
+ *  counting them together isn't meaningful). */
+function ActionChips({ actions }: { actions: ActionLogEntry[] }) {
+  const added = actions.filter((a) => a.type === "file_added");
+  const edited = actions.filter((a) => a.type === "file_edited");
+  const removed = actions.filter((a) => a.type === "file_removed");
+  const commands = actions.filter((a) => a.type === "command");
+
+  const chip = (key: string, icon: string, label: string) => (
+    <span
+      key={key}
+      className="inline-flex items-center gap-1 rounded border border-border-soft bg-panel-raised px-1.5 py-0.5 text-[10px] text-text-muted"
+    >
+      <span className="text-text-dim">{icon}</span>
+      {label}
+    </span>
+  );
+
+  return (
+    <div className="mt-1.5 flex flex-wrap gap-1">
+      {added.length > 0 && chip("added", "+", `${added.length} File${added.length > 1 ? "s" : ""} added`)}
+      {edited.length > 0 && chip("edited", "~", `${edited.length} File${edited.length > 1 ? "s" : ""} edited`)}
+      {removed.length > 0 && chip("removed", "−", `${removed.length} File${removed.length > 1 ? "s" : ""} removed`)}
+      {commands.map((c, i) => chip(`cmd-${i}`, "$", c.command ?? ""))}
+    </div>
+  );
+}
+
 export default function ChatPanel({
   messages,
   isGenerating,
@@ -30,8 +64,10 @@ export default function ChatPanel({
   onManageApiKey,
   phase,
   serverUrl,
+  onOpenMobileWorkspace,
 }: ChatPanelProps) {
   const [draft, setDraft] = useState("");
+  const [menuPos, setMenuPos] = useState<{ x: number; y: number } | null>(null);
 
   const submit = (e: FormEvent) => {
     e.preventDefault();
@@ -48,8 +84,24 @@ export default function ChatPanel({
     }
   };
 
+  // "Hold click to reveal, like a Windows right-click menu" — the native
+  // contextmenu event already fires on long-press on virtually every mobile
+  // browser (it's how text-selection menus appear), so it doubles perfectly
+  // as this gesture without any manual touch-timer code. Only intercepted
+  // below the desktop breakpoint, where the side panels aren't on screen.
+  const onContextMenu = (e: MouseEvent) => {
+    if (!window.matchMedia("(max-width: 767px)").matches) return;
+    e.preventDefault();
+    setMenuPos({ x: e.clientX, y: e.clientY });
+  };
+
+  const openWorkspace = (tab: WorkspaceTab) => {
+    setMenuPos(null);
+    onOpenMobileWorkspace(tab);
+  };
+
   return (
-    <div className="flex h-full flex-col bg-panel">
+    <div className="relative flex h-full flex-col bg-panel">
       <div className="border-b border-border px-4 py-3">
         <div className="flex items-center gap-2">
           <span className="glow h-2 w-2 rounded-full bg-white" />
@@ -67,7 +119,8 @@ export default function ChatPanel({
 
       {/* Mobile-only status strip: on small screens there's no editor/terminal
           in view, but the WebContainer pipeline is still running in the
-          background — this is the only visible signal of that on mobile. */}
+          background. Long-press anywhere in the message list below to open
+          Files/Preview/Terminal full-screen. */}
       <div className="flex items-center gap-2 border-b border-border px-4 py-2 md:hidden">
         <span
           className={
@@ -79,7 +132,7 @@ export default function ChatPanel({
           }
         />
         <span className="text-[11px] text-text-muted">{PHASE_LABEL[phase]}</span>
-        {phase === "ready" && serverUrl && (
+        {phase === "ready" && serverUrl ? (
           <a
             href={serverUrl}
             target="_blank"
@@ -88,10 +141,15 @@ export default function ChatPanel({
           >
             Open live preview ↗
           </a>
+        ) : (
+          <span className="ml-auto text-[10px] text-text-dim">Hold to open workspace</span>
         )}
       </div>
 
-      <div className="flex-1 space-y-4 overflow-y-auto px-4 py-4">
+      <div
+        onContextMenu={onContextMenu}
+        className="flex-1 space-y-4 overflow-y-auto px-4 py-4 [-webkit-touch-callout:none]"
+      >
         {messages.length === 0 && (
           <p className="text-sm leading-relaxed text-text-muted">
             Describe the app you want. The first message boots a project — installs
@@ -108,7 +166,14 @@ export default function ChatPanel({
                   : "max-w-[85%] rounded-lg border border-border-soft px-3 py-2 text-sm text-text-muted"
               }
             >
-              {m.content}
+              {m.role === "assistant" ? (
+                <div className="prose-chat">
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.content}</ReactMarkdown>
+                </div>
+              ) : (
+                m.content
+              )}
+              {m.actions && m.actions.length > 0 && <ActionChips actions={m.actions} />}
             </div>
           </div>
         ))}
@@ -120,6 +185,35 @@ export default function ChatPanel({
           </div>
         )}
       </div>
+
+      {menuPos && (
+        <>
+          <div className="fixed inset-0 z-40" onClick={() => setMenuPos(null)} />
+          <div
+            style={{ left: menuPos.x, top: menuPos.y }}
+            className="glow-lg fixed z-50 min-w-[160px] overflow-hidden rounded-md border border-border bg-panel-raised py-1 text-sm"
+          >
+            <button
+              onClick={() => openWorkspace("files")}
+              className="block w-full px-3 py-2 text-left text-text-muted hover:bg-white/5 hover:text-text"
+            >
+              Files (VFS)
+            </button>
+            <button
+              onClick={() => openWorkspace("preview")}
+              className="block w-full px-3 py-2 text-left text-text-muted hover:bg-white/5 hover:text-text"
+            >
+              Preview
+            </button>
+            <button
+              onClick={() => openWorkspace("terminal")}
+              className="block w-full px-3 py-2 text-left text-text-muted hover:bg-white/5 hover:text-text"
+            >
+              Terminal
+            </button>
+          </div>
+        </>
+      )}
 
       <form onSubmit={submit} className="border-t border-border p-3">
         <textarea

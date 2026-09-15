@@ -4,44 +4,65 @@ import ChatPanel from "./components/ChatPanel";
 import EditorPanel from "./components/EditorPanel";
 import PreviewPanel from "./components/PreviewPanel";
 import ApiKeyModal from "./components/ApiKeyModal";
+import MobileWorkspace from "./components/MobileWorkspace";
+import Resizer from "./components/Resizer";
 import type { TerminalHandle } from "./components/Terminal";
 import { generateProjectFromPrompt, hasUsableApiKey } from "./lib/openrouter";
 import { getStoredApiKey, setStoredApiKey, clearStoredApiKey } from "./lib/apiKeyStore";
-import { bootWebContainer, mountAndRun, writeFiles, runCommands } from "./lib/webcontainerManager";
-import type { BootPhase, ChatMessage, ProjectFile } from "./types";
+import {
+  bootWebContainer,
+  mountAndRun,
+  writeFiles,
+  runCommands,
+  deletePaths,
+  listProjectFiles,
+  watchProject,
+} from "./lib/webcontainerManager";
+import type { ActionLogEntry, AiAction, BootPhase, ChatMessage, ProjectFile } from "./types";
 
 let messageCounter = 0;
 const nextId = () => `msg_${++messageCounter}_${Date.now()}`;
 
-/** Upserts `incoming` files into `existing` by path, preserving the order of
- *  files that were already there and appending genuinely new ones. */
-function mergeFiles(existing: ProjectFile[], incoming: ProjectFile[]): ProjectFile[] {
-  const map = new Map(existing.map((f) => [f.path, f] as const));
-  for (const f of incoming) map.set(f.path, f);
-  return Array.from(map.values());
-}
-
 export default function App() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [files, setFiles] = useState<ProjectFile[]>([]);
+  const [vfsPaths, setVfsPaths] = useState<string[]>([]);
   const [activePath, setActivePath] = useState<string | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
   const [phase, setPhase] = useState<BootPhase>("idle");
   const [serverUrl, setServerUrl] = useState<string | null>(null);
   const [apiKeyModalOpen, setApiKeyModalOpen] = useState(() => !hasUsableApiKey());
   const [hasKey, setHasKey] = useState(hasUsableApiKey);
+  const [chatWidth, setChatWidth] = useState(340);
+  const [previewWidth, setPreviewWidth] = useState(460);
+  const [mobileOverlayTab, setMobileOverlayTab] = useState<"files" | "preview" | "terminal" | null>(null);
 
   const containerRef = useRef<WebContainer | null>(null);
   const terminalRef = useRef<TerminalHandle>(null);
+  const mobileTerminalRef = useRef<TerminalHandle>(null);
   const hasRunInstallRef = useRef(false);
   // Mirrors `files` synchronously so handleSend can read the current project
-  // state without needing `files` in its own dependency array (which would
-  // otherwise recreate the callback — and re-run the boot effect's closures
-  // — on every keystroke-driven edit).
+  // state without needing `files` in its own dependency array.
   const filesRef = useRef<ProjectFile[]>([]);
   useEffect(() => {
     filesRef.current = files;
   }, [files]);
+
+  const writeToTerminals = useCallback((chunk: string) => {
+    terminalRef.current?.write(chunk);
+    mobileTerminalRef.current?.write(chunk);
+  }, []);
+
+  const refreshVfs = useCallback(async () => {
+    const container = containerRef.current;
+    if (!container) return;
+    try {
+      const paths = await listProjectFiles(container);
+      setVfsPaths(paths);
+    } catch {
+      // Best-effort — the tab just won't update this cycle.
+    }
+  }, []);
 
   // Requirement 3: boot the WebContainer as soon as the page loads, before
   // the user has typed anything, so the first generation can mount instantly.
@@ -49,22 +70,42 @@ export default function App() {
   // the terminal/editor/preview are hidden from the UI, but the boot/install/
   // dev-server pipeline below is identical and keeps running in the background.
   useEffect(() => {
+    let cancelled = false;
+    let watcher: { close: () => void } | null = null;
+
     setPhase("booting");
     bootWebContainer()
       .then((c) => {
+        if (cancelled) return;
         containerRef.current = c;
         setPhase("idle");
-        terminalRef.current?.write("WebContainer booted. Send a prompt to generate a project.\r\n");
+        writeToTerminals("WebContainer booted. Send a prompt to generate a project.\r\n");
+
+        // Live VFS reload: whenever ANYTHING changes on disk inside the
+        // container — a terminal command creating a file, npm install
+        // touching package-lock.json, an AI action — refresh the Files tab
+        // from the real filesystem, not just from what the app itself wrote.
+        watcher = watchProject(c, refreshVfs);
       })
       .catch((err) => {
+        if (cancelled) return;
         setPhase("error");
-        terminalRef.current?.write(`\r\n\x1b[31mFailed to boot WebContainer: ${String(err)}\x1b[0m\r\n`);
+        writeToTerminals(`\r\n\x1b[31mFailed to boot WebContainer: ${String(err)}\x1b[0m\r\n`);
       });
+
+    return () => {
+      cancelled = true;
+      watcher?.close();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const appendMessage = useCallback((role: ChatMessage["role"], content: string) => {
-    setMessages((prev) => [...prev, { id: nextId(), role, content, createdAt: Date.now() }]);
-  }, []);
+  const appendMessage = useCallback(
+    (role: ChatMessage["role"], content: string, actions?: ActionLogEntry[]) => {
+      setMessages((prev) => [...prev, { id: nextId(), role, content, createdAt: Date.now(), actions }]);
+    },
+    []
+  );
 
   const handleSend = useCallback(async (prompt: string) => {
     appendMessage("user", prompt);
@@ -73,34 +114,56 @@ export default function App() {
     const isFirstGeneration = !hasRunInstallRef.current;
 
     try {
-      // Iterations get the full current project as context, so the AI is
-      // reading and editing the real virtual filesystem instead of guessing.
-      const { files: newFiles, commands, summary, usedFallback } = await generateProjectFromPrompt(
+      const { actions, summary, usedFallback } = await generateProjectFromPrompt(
         prompt,
         isFirstGeneration ? [] : filesRef.current
       );
 
-      appendMessage(
-        "assistant",
-        usedFallback ? `${summary} (using local fallback — see the OpenRouter setup note.)` : summary
-      );
-
-      if (newFiles.length === 0 && commands.length === 0) {
-        // Nothing to apply (e.g. iteration failed, or no key configured yet).
+      if (actions.length === 0) {
+        appendMessage("assistant", summary);
         return;
       }
 
       const container = containerRef.current;
       if (!container) throw new Error("WebContainer is not ready yet");
 
+      const knownPaths = new Set(filesRef.current.map((f) => f.path));
+      const writes = actions.filter((a): a is AiAction & { type: "write_file" } => a.type === "write_file");
+      const deletes = actions.filter((a): a is AiAction & { type: "delete_file" } => a.type === "delete_file");
+      const commands = actions
+        .filter((a): a is AiAction & { type: "run_command" } => a.type === "run_command")
+        .map((a) => a.command!);
+
+      // Build the action log BEFORE applying, from the pre-change knownPaths,
+      // so "added" vs "edited" reflects what was actually true at the time.
+      const log: ActionLogEntry[] = [
+        ...writes.map(
+          (w): ActionLogEntry => ({
+            type: knownPaths.has(w.path!) ? "file_edited" : "file_added",
+            path: w.path,
+          })
+        ),
+        ...deletes.map((d): ActionLogEntry => ({ type: "file_removed", path: d.path })),
+        ...commands.map((c): ActionLogEntry => ({ type: "command", command: c })),
+      ];
+      appendMessage(
+        "assistant",
+        usedFallback ? `${summary}\n\n*(using local fallback — see the OpenRouter setup note)*` : summary,
+        log
+      );
+
+      const newProjectFiles: ProjectFile[] = writes.map((w) => ({ path: w.path!, contents: w.contents! }));
+
       if (isFirstGeneration) {
         hasRunInstallRef.current = true;
-        setFiles(newFiles);
-        setActivePath(newFiles.find((f) => f.path === "src/App.tsx")?.path ?? newFiles[0]?.path ?? null);
+        setFiles(newProjectFiles);
+        setActivePath(
+          newProjectFiles.find((f) => f.path === "src/App.tsx")?.path ?? newProjectFiles[0]?.path ?? null
+        );
         setPhase("mounting");
         setPhase("installing");
-        await mountAndRun(container, newFiles, {
-          onOutput: (chunk) => terminalRef.current?.write(chunk),
+        await mountAndRun(container, newProjectFiles, {
+          onOutput: writeToTerminals,
           onServerReady: (url) => {
             setServerUrl(url);
             setPhase("ready");
@@ -109,26 +172,39 @@ export default function App() {
         setPhase("starting");
       } else {
         // The AI can touch the virtual filesystem, the editor, and the
-        // terminal on follow-up prompts: merge whichever files it changed
-        // into state (Monaco updates instantly), hot-write just those files
-        // into the running container (Vite's HMR picks them up), then run
-        // any commands it asked for (e.g. installing a new package).
-        setFiles((prev) => mergeFiles(prev, newFiles));
-        if (newFiles.length > 0) setActivePath(newFiles[0].path);
-        if (newFiles.length > 0) await writeFiles(container, newFiles);
+        // terminal on follow-up prompts: merge writes, apply deletes, hot-
+        // write into the running container (Vite's HMR picks them up), then
+        // run any commands it asked for.
+        if (newProjectFiles.length > 0) {
+          setFiles((prev) => {
+            const map = new Map(prev.map((f) => [f.path, f] as const));
+            for (const f of newProjectFiles) map.set(f.path, f);
+            return Array.from(map.values());
+          });
+          setActivePath(newProjectFiles[0].path);
+          await writeFiles(container, newProjectFiles);
+        }
+        if (deletes.length > 0) {
+          const deletePathSet = new Set(deletes.map((d) => d.path!));
+          setFiles((prev) => prev.filter((f) => !deletePathSet.has(f.path)));
+          setActivePath((prev) => (prev && deletePathSet.has(prev) ? null : prev));
+          await deletePaths(container, deletes.map((d) => d.path!));
+        }
         if (commands.length > 0) {
-          await runCommands(container, commands, (chunk) => terminalRef.current?.write(chunk));
+          await runCommands(container, commands, writeToTerminals);
         }
       }
+
+      await refreshVfs();
     } catch (err) {
       setPhase("error");
       const message = err instanceof Error ? err.message : String(err);
       appendMessage("assistant", `Something went wrong: ${message}`);
-      terminalRef.current?.write(`\r\n\x1b[31m${message}\x1b[0m\r\n`);
+      writeToTerminals(`\r\n\x1b[31m${message}\x1b[0m\r\n`);
     } finally {
       setIsGenerating(false);
     }
-  }, [appendMessage]);
+  }, [appendMessage, refreshVfs, writeToTerminals]);
 
   const handleSaveApiKey = useCallback((key: string) => {
     setStoredApiKey(key);
@@ -136,9 +212,7 @@ export default function App() {
     setApiKeyModalOpen(false);
   }, []);
 
-  const handleSkipApiKey = useCallback(() => {
-    setApiKeyModalOpen(false);
-  }, []);
+  const handleSkipApiKey = useCallback(() => setApiKeyModalOpen(false), []);
 
   const handleClearApiKey = useCallback(() => {
     clearStoredApiKey();
@@ -149,8 +223,25 @@ export default function App() {
   const handleChangeContents = useCallback((path: string, contents: string) => {
     setFiles((prev) => prev.map((f) => (f.path === path ? { ...f, contents } : f)));
     const container = containerRef.current;
-    if (container) {
-      void writeFiles(container, [{ path, contents }]);
+    if (container) void writeFiles(container, [{ path, contents }]);
+  }, []);
+
+  /** Opens a path in Monaco, fetching its contents from the real container
+   *  filesystem first if it's not one of the files already tracked in state
+   *  (e.g. something a terminal command created that the AI never declared). */
+  const handleSelectVfsPath = useCallback(async (path: string) => {
+    if (filesRef.current.some((f) => f.path === path)) {
+      setActivePath(path);
+      return;
+    }
+    const container = containerRef.current;
+    if (!container) return;
+    try {
+      const contents = await container.fs.readFile(path, "utf-8");
+      setFiles((prev) => [...prev, { path, contents }]);
+      setActivePath(path);
+    } catch {
+      // Not a readable text file (e.g. a binary) — nothing sensible to show.
     }
   }, []);
 
@@ -165,10 +256,14 @@ export default function App() {
         />
       )}
 
-      {/* Mobile: chat is the only visible panel — full width, no editor/terminal.
+      {/* Mobile: chat is the primary panel, full width. Long-press it to reveal
+          Files/Preview/Terminal in a full-screen overlay — see MobileWorkspace.
           The WebContainer boot/install/dev-server pipeline above runs identically
-          either way; only the UI for watching it is hidden below the md breakpoint. */}
-      <aside className="w-full shrink-0 border-r border-border md:w-[340px]">
+          either way; only the UI for watching it differs below the md breakpoint. */}
+      <aside
+        style={{ ["--chat-w" as string]: `${chatWidth}px` }}
+        className="w-full shrink-0 border-r border-border md:w-[var(--chat-w)]"
+      >
         <ChatPanel
           messages={messages}
           isGenerating={isGenerating}
@@ -177,8 +272,11 @@ export default function App() {
           onManageApiKey={() => setApiKeyModalOpen(true)}
           phase={phase}
           serverUrl={serverUrl}
+          onOpenMobileWorkspace={(tab) => setMobileOverlayTab(tab)}
         />
       </aside>
+
+      <Resizer className="hidden md:block" onDrag={(dx) => setChatWidth((w) => Math.min(560, Math.max(260, w + dx)))} />
 
       <main className="hidden min-w-0 flex-1 border-r border-border md:block">
         <EditorPanel
@@ -189,16 +287,33 @@ export default function App() {
         />
       </main>
 
-      <aside className="hidden w-[460px] shrink-0 md:block">
+      <Resizer className="hidden md:block" onDrag={(dx) => setPreviewWidth((w) => Math.min(800, Math.max(320, w - dx)))} />
+
+      <aside style={{ width: previewWidth }} className="hidden shrink-0 md:block">
         <PreviewPanel
           ref={terminalRef}
           phase={phase}
           serverUrl={serverUrl}
-          files={files}
+          vfsPaths={vfsPaths}
           activePath={activePath}
-          onSelectPath={setActivePath}
+          onSelectPath={handleSelectVfsPath}
+          onRefreshVfs={refreshVfs}
         />
       </aside>
+
+      {mobileOverlayTab && (
+        <MobileWorkspace
+          initialTab={mobileOverlayTab}
+          onClose={() => setMobileOverlayTab(null)}
+          phase={phase}
+          serverUrl={serverUrl}
+          vfsPaths={vfsPaths}
+          activePath={activePath}
+          onSelectPath={handleSelectVfsPath}
+          onRefreshVfs={refreshVfs}
+          terminalRef={mobileTerminalRef}
+        />
+      )}
     </div>
   );
 }
