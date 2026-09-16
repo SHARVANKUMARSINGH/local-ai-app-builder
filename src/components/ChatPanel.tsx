@@ -2,11 +2,13 @@ import { useState, type FormEvent, type KeyboardEvent, type MouseEvent } from "r
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { ActionLogEntry, BootPhase, ChatMessage } from "../types";
-import { OPENROUTER_MODEL } from "../lib/openrouter";
 
 type WorkspaceTab = "files" | "preview" | "terminal";
 
 interface ChatPanelProps {
+  projectName: string;
+  onBackToProjects: () => void;
+  model: string;
   messages: ChatMessage[];
   isGenerating: boolean;
   onSend: (prompt: string) => void;
@@ -57,6 +59,9 @@ function ActionChips({ actions }: { actions: ActionLogEntry[] }) {
 }
 
 export default function ChatPanel({
+  projectName,
+  onBackToProjects,
+  model,
   messages,
   isGenerating,
   onSend,
@@ -104,17 +109,24 @@ export default function ChatPanel({
     <div className="relative flex h-full flex-col bg-panel">
       <div className="border-b border-border px-4 py-3">
         <div className="flex items-center gap-2">
+          <button
+            onClick={onBackToProjects}
+            className="mr-0.5 text-text-dim hover:text-text-muted"
+            title="Back to projects"
+          >
+            ←
+          </button>
           <span className="glow h-2 w-2 rounded-full bg-white" />
-          <h1 className="text-sm font-medium tracking-tight text-text">local-ai-app-builder</h1>
+          <h1 className="truncate text-sm font-medium tracking-tight text-text">{projectName}</h1>
           <button
             onClick={onManageApiKey}
-            className="ml-auto flex items-center gap-1.5 text-[11px] text-text-dim hover:text-text-muted"
+            className="ml-auto flex shrink-0 items-center gap-1.5 text-[11px] text-text-dim hover:text-text-muted"
           >
             <span className={`h-1.5 w-1.5 rounded-full ${apiKeyPresent ? "glow bg-white" : "bg-text-dim"}`} />
             {apiKeyPresent ? "API key set" : "Add API key"}
           </button>
         </div>
-        <p className="mt-1 text-[10px] tracking-wide text-text-dim">{OPENROUTER_MODEL} · no cost</p>
+        <p className="mt-1 truncate text-[10px] tracking-wide text-text-dim">{model}</p>
       </div>
 
       {/* Mobile-only status strip: on small screens there's no editor/terminal

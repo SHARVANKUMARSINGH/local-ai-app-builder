@@ -63,10 +63,22 @@ OpenRouter hosts.
 
 ## How it works
 
+0. **Projects** -- the app opens on a landing page (`src/components/ProjectLanding.tsx`),
+   not straight into the builder. Creating a project asks for a name and a
+   model (`src/components/ModelPicker.tsx` -- a from-scratch dropdown, not a
+   native `<select>`, fetching OpenRouter's live catalog from
+   `GET /api/v1/models` and grouping it into Free / Paid, each row with a
+   small vendor monogram -- see "Model picker" below for why not real logos).
+   The model choice is fixed for that project's lifetime, on purpose --
+   it's a Create Project setting, not a per-message one. Every project's
+   `{ name, model, files, messages }` is persisted to `localStorage`
+   (`src/lib/projects.ts`) and reopening one from the landing page re-mounts
+   its saved files into a fresh WebContainer automatically -- the dev server
+   session itself can't survive a page reload (it's in-memory in the tab),
+   but the code and chat history do.
 1. **Boot** (`src/lib/webcontainerManager.ts`) -- `WebContainer.boot()` runs
-   once on page load (cached at module scope so React StrictMode's
-   double-invoke in dev doesn't try to boot twice, which throws). This
-   happens on every screen size, including mobile -- see "Mobile" below.
+   once per opened project (cached at module scope so React StrictMode's
+   double-invoke in dev doesn't try to boot twice, which throws).
 2. **Generate** (`src/lib/openrouter.ts`) -- the prompt is sent to
    `openrouter/free` (OpenRouter's own free-tier router model, so this
    doesn't rot the way a hardcoded `some-model:free` id does when that
@@ -102,7 +114,7 @@ contents from the container and opens it.
 ### The strict action protocol
 
 The AI never returns "a project" loosely -- every response is validated
-against exactly three action shapes (`src/lib/openrouter.ts`):
+against exactly three action shapes, or an empty list (`src/lib/openrouter.ts`):
 
 ```json
 { "type": "write_file",  "path": "src/App.tsx", "contents": "..." }
@@ -113,10 +125,29 @@ against exactly three action shapes (`src/lib/openrouter.ts`):
 Anything that doesn't match one of these three shapes exactly is rejected.
 This is what lets one response touch the filesystem, the editor, and the
 terminal together -- `write_file`/`delete_file` cover the Files tool,
-`run_command` covers the Terminal tool. Applied actions show up in chat as
-small chips ("+2 Files added", "1 File edited", "$ npm install axios") built
-from `ActionLogEntry`s in `App.tsx`. The `summary` field is Markdown,
-rendered via `react-markdown` + `remark-gfm`.
+`run_command` covers the Terminal tool. An **empty `actions: []`** is
+explicitly valid too ("Tool: none" in the system prompt) -- for when the
+user is just asking a question or chatting, with no code change needed; the
+model is told this is a normal response, not a failure, so it doesn't
+invent a pointless file edit just to have something in the array. The
+system prompt also tells it the WebContainer already has Node.js/npm
+preinstalled, so it doesn't waste a `run_command` trying to install Node
+itself. Applied actions show up in chat as small chips ("+2 Files added",
+"1 File edited", "$ npm install axios") built from `ActionLogEntry`s in
+`Builder.tsx`. The `summary` field is Markdown, rendered via
+`react-markdown` + `remark-gfm`.
+
+### Model picker
+
+`GET https://openrouter.ai/api/v1/models` is a public, unauthenticated
+endpoint, so the picker fetches it directly from the browser -- no key
+needed just to browse. Models are split into Free (`pricing.prompt` and
+`.completion` both `"0"`, or an id ending in `:free`) and Paid, each row
+showing a vendor monogram and, for paid models, a $/M-token price. OpenRouter
+doesn't return per-model icon assets, and reproducing every provider's
+actual brand logo would be a copyright problem regardless, so
+`src/lib/vendorIcon.ts` derives a plain two-letter monogram from the vendor
+slug (the "openai" in "openai/gpt-4o") instead of a real logo.
 
 ### Resizable panels & mobile workspace
 

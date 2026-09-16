@@ -14,6 +14,11 @@ import { getStoredApiKey } from "./apiKeyStore";
  * a hardcoded `some-model:free` id does when that specific model's free tier
  * gets pulled. See https://openrouter.ai/openrouter/free
  *
+ * The actual model used per-project is chosen once, at project creation
+ * (see ModelPicker.tsx / ProjectLanding.tsx) and passed into
+ * `generateProjectFromPrompt` below — this constant is only the default for
+ * a brand-new project.
+ *
  * This app is a pure static SPA with no backend, so there's no way to keep a
  * key truly secret from the person using it anyway. Given that, the key is
  * resolved in this priority order:
@@ -50,9 +55,10 @@ function createClient(apiKey: string): OpenAI {
  * ── The strict action protocol ──────────────────────────────────────────────
  * The AI never returns "a project" or "some files" loosely — it returns an
  * ordered list of `actions`, each one of exactly three machine-checked
- * shapes. This is what lets it drive the filesystem, the editor, AND the
- * terminal from one response, and lets the UI render a precise action log
- * (icons, "+2 files added", etc.) instead of guessing from prose.
+ * shapes (or an EMPTY list — see "Tool: none" below). This is what lets one
+ * response drive the filesystem, the editor, AND the terminal, and lets the
+ * UI render a precise action log (icons, "+2 files added", etc.) instead of
+ * guessing from prose.
  *
  *   { "type": "write_file",  "path": "src/App.tsx", "contents": "..." }
  *   { "type": "delete_file", "path": "src/old.tsx" }
@@ -65,7 +71,7 @@ const RESPONSE_FORMAT_SPEC = `Respond with ONLY a JSON object (no markdown fence
 before or after it) matching EXACTLY this shape:
 
 {
-  "summary": "Markdown-formatted explanation of what you did, for the chat.",
+  "summary": "Markdown-formatted explanation, for the chat.",
   "actions": [
     { "type": "write_file", "path": "src/App.tsx", "contents": "...\\n" },
     { "type": "delete_file", "path": "src/Unused.tsx" },
@@ -82,46 +88,70 @@ nothing else:
 - "contents" on write_file is always the file's COMPLETE new contents (never a diff,
   never "// ...rest unchanged").
 - Every other field name is invalid — do not add "description", "reason", etc. to an action.
-- "summary" may use Markdown (backticks, bold, lists) — it's rendered as Markdown in the UI.`;
+- "summary" may use Markdown (backticks, bold, lists) — it's rendered as Markdown in the UI.
 
-const INITIAL_SYSTEM_PROMPT = `You are an expert React + Vite engineer working inside an in-browser code generator.
+Tool: none — if the user is asking a question, wants an explanation of existing code,
+or is just chatting and genuinely needs no file or terminal change, return
+"actions": []  (an empty array) and put your complete answer in "summary". This is a
+normal, expected response — not a fallback or a failure. Do NOT invent a file edit or
+a command just to have something in "actions" when nothing actually needs to change.
 
-Given a user's request, respond with a SMALL, RUNNABLE React + TypeScript + Vite project
-that satisfies it, expressed entirely as "write_file" actions.
+Environment note: this project runs inside a WebContainer that already has Node.js
+and npm pre-installed and on PATH. Never write a "run_command" that tries to install
+Node, nvm, or a system package manager (apt/brew/etc.) — none of that exists or is
+needed here. "run_command" should only ever be things like \`npm install <pkg>\`,
+\`npm run <script>\`, or a one-off \`node\` / \`npx\` invocation.`;
+
+const INITIAL_SYSTEM_PROMPT = `You are an expert React + Vite engineer working inside an in-browser AI app builder,
+similar to Bolt.new or Lovable. A person describes an app in plain English; you return
+one that actually runs.
+
+Given the user's request, respond with a SMALL, RUNNABLE React + TypeScript + Vite
+project that satisfies it, expressed entirely as "write_file" actions (this is the
+first message for this project, so there's no existing code yet — "Tool: none" doesn't
+apply here; always produce a working app).
 
 ${RESPONSE_FORMAT_SPEC}
 
 Project rules:
 - Always include a valid "package.json" with a "dev" script ("vite") and correct dependencies.
 - Keep the dependency list minimal (react, react-dom, vite, @vitejs/plugin-react, typescript).
-- Write real, complete file contents — no placeholders or TODOs.
-- Prefer functional components and inline styles or a single small CSS file; no external
-  UI libraries unless the user explicitly asks for one.
-- The app must run standalone with \`npm install && npm run dev\`.
-- Don't include any "run_command" actions on this initial generation — \`npm install\` already
-  runs automatically against the package.json you return.`;
+  Only add another dependency if the request specifically calls for it.
+- Write real, complete file contents — no placeholders, no "// TODO", no stub functions.
+- Prefer functional components, hooks, and either inline styles or one small CSS file —
+  skip external UI/CSS frameworks unless the user explicitly asks for one.
+- Match the complexity of the request: a "todo list" doesn't need five files and a
+  state-management library.
+- The app must run standalone with \`npm install && npm run dev\` — don't reference
+  any file, asset, or env var you didn't also create.
+- Don't include any "run_command" actions on this initial generation — \`npm install\`
+  already runs automatically against the package.json you return.`;
 
-const ITERATION_SYSTEM_PROMPT = `You are an expert React + Vite engineer working inside an in-browser code generator.
+const ITERATION_SYSTEM_PROMPT = `You are an expert React + Vite engineer working inside an in-browser AI app builder.
 You are editing a project that is ALREADY mounted, installed, and running live in the
-user's browser (a WebContainer) — this is a real, running virtual filesystem, not a
-hypothetical one. The full current contents of every file will be given to you as
-context below. Read them before responding; you're editing this codebase, not starting over.
+user's browser (a WebContainer) — a real, running virtual filesystem, not a
+hypothetical one. The full current contents of every file are given to you as context
+below. Read them before responding; you're editing this codebase, not starting over.
 
 ${RESPONSE_FORMAT_SPEC}
 
 Editing rules:
 - Only emit "write_file" for files that are new or whose contents actually changed —
-  never resend an unchanged file.
+  never resend an unchanged file. Each "contents" is the file's complete new text.
 - Use "delete_file" to remove a file the user asked to remove, or one your change makes
   obsolete. Deleting is real: it runs \`rm\` in the container and drops the file from the
-  editor and file tree.
+  editor and file tree immediately.
 - Use "run_command" for anything that needs to happen in the terminal for your change to
-  work — most commonly \`npm install <package>\` when you import something new (also add it
-  to package.json's "dependencies" yourself in a write_file action; don't rely on the
-  install to update package.json for you). Only include commands that are truly necessary.
+  work — most commonly \`npm install <package>\` when you import something new (also add
+  it to package.json's "dependencies" yourself via a write_file action; the install
+  running doesn't retroactively edit package.json for you). Only include commands that
+  are genuinely necessary — dependencies already installed don't need reinstalling.
 - Never touch package.json's "scripts" unless the user explicitly asks for a different
   dev tool or setup.
-- Keep changes scoped to what the user asked for.`;
+- Keep changes scoped to what the user actually asked for — don't refactor unrelated
+  code, rename things, or "clean up" as a side effect.
+- If the request is ambiguous, make the most reasonable interpretation and say what you
+  assumed in "summary", rather than responding with only clarifying questions.`;
 
 export interface GenerationResult {
   actions: AiAction[];
@@ -185,6 +215,9 @@ function normalizeResult(parsed: unknown): { actions: AiAction[]; summary: strin
   if (!Array.isArray(raw.actions)) {
     throw new Error('Model response is missing an "actions" array');
   }
+  // An empty array is valid and expected — "Tool: none" for pure Q&A/chat
+  // turns that need no file or terminal change. Only the shape of each
+  // *present* action is strictly enforced.
   const actions = raw.actions.map(validateAction);
   return {
     actions,
@@ -215,9 +248,11 @@ function actionsFromTemplate(prompt: string): { actions: AiAction[]; summary: st
 }
 
 /**
- * Sends the user's natural-language prompt to the configured OpenRouter model
- * and returns a strictly-validated, ordered list of actions (file writes,
- * file deletes, and terminal commands) to apply.
+ * Sends the user's natural-language prompt to `model` (an OpenRouter model
+ * id, chosen once at project-creation time — see ProjectLanding.tsx) and
+ * returns a strictly-validated, ordered list of actions (file writes, file
+ * deletes, and terminal commands — possibly none at all, for a pure Q&A
+ * turn) to apply.
  *
  * When `existingFiles` is non-empty, this runs in "iteration" mode: the full
  * current project is sent as context so the model can read and edit the real,
@@ -230,7 +265,8 @@ function actionsFromTemplate(prompt: string): { actions: AiAction[]; summary: st
  */
 export async function generateProjectFromPrompt(
   prompt: string,
-  existingFiles: ProjectFile[] = []
+  existingFiles: ProjectFile[] = [],
+  model: string = OPENROUTER_MODEL
 ): Promise<GenerationResult> {
   const apiKey = resolveApiKey();
   const isIteration = existingFiles.length > 0;
@@ -253,7 +289,7 @@ export async function generateProjectFromPrompt(
       : prompt;
 
     const completion = await client.chat.completions.create({
-      model: OPENROUTER_MODEL,
+      model,
       temperature: 0.3,
       messages: [
         { role: "system", content: isIteration ? ITERATION_SYSTEM_PROMPT : INITIAL_SYSTEM_PROMPT },
@@ -263,7 +299,8 @@ export async function generateProjectFromPrompt(
 
     const raw = completion.choices[0]?.message?.content ?? "";
     const { actions, summary } = normalizeResult(extractJson(raw));
-    if (actions.length === 0) throw new Error("Model returned zero actions");
+    // NOTE: zero actions is valid (Tool: none) — only a genuinely malformed
+    // response (caught above by normalizeResult/extractJson) is an error.
     return { actions, summary, usedFallback: false };
   } catch (err) {
     console.error("[openrouter] Generation failed:", err);
