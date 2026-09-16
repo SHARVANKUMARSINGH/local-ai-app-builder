@@ -64,18 +64,31 @@ OpenRouter hosts.
 ## How it works
 
 0. **Projects** -- the app opens on a landing page (`src/components/ProjectLanding.tsx`),
-   not straight into the builder. Creating a project asks for a name and a
-   model (`src/components/ModelPicker.tsx` -- a from-scratch dropdown, not a
-   native `<select>`, fetching OpenRouter's live catalog from
-   `GET /api/v1/models` and grouping it into Free / Paid, each row with a
-   small vendor monogram -- see "Model picker" below for why not real logos).
-   The model choice is fixed for that project's lifetime, on purpose --
-   it's a Create Project setting, not a per-message one. Every project's
-   `{ name, model, files, messages }` is persisted to `localStorage`
-   (`src/lib/projects.ts`) and reopening one from the landing page re-mounts
-   its saved files into a fresh WebContainer automatically -- the dev server
-   session itself can't survive a page reload (it's in-memory in the tab),
-   but the code and chat history do.
+   not straight into the builder. Creating a project asks for a name, a
+   **platform** (Web or Native), and a **model**:
+   - **Web** shows a framework grid -- React, Vue, Svelte, Vanilla JS,
+     Static (plain HTML/CSS/JS, no build step, for ordinary pages), or
+     Custom (no framework constraint at all -- the AI picks the stack).
+   - **Native** is a single fixed preset: React Native + Expo, previewed via
+     Expo's *web* target (`expo start --web`) since there's no mobile
+     simulator inside a browser tab -- the AI is told to say so plainly the
+     first time, so it's clear you're seeing react-native-web's rendering,
+     not a native build. This one is more experimental than the Web presets:
+     Expo's install is large and WebContainer wasn't really designed for it.
+   - The **model** picker (`src/components/ModelPicker.tsx`) is a
+     from-scratch dropdown, not a native `<select>`, fetching OpenRouter's
+     live catalog from `GET /api/v1/models` and grouping it into Free / Paid,
+     each row with a small vendor monogram (see "Model picker" below for why
+     not real logos).
+
+   All three choices are fixed for that project's lifetime, on purpose --
+   they're Create Project settings, not per-message ones (`src/lib/frameworks.ts`
+   is the small catalog behind the framework grid). Every project's
+   `{ name, model, platform, framework, files, messages }` is persisted to
+   `localStorage` (`src/lib/projects.ts`), and reopening one from the landing
+   page re-mounts its saved files into a fresh WebContainer automatically --
+   the dev server session itself can't survive a page reload (it's in-memory
+   in the tab), but the code and chat history do.
 1. **Boot** (`src/lib/webcontainerManager.ts`) -- `WebContainer.boot()` runs
    once per opened project (cached at module scope so React StrictMode's
    double-invoke in dev doesn't try to boot twice, which throws).
@@ -177,5 +190,33 @@ same two headers there too.
   next step.
 - The AI call has no streaming/partial-file support; it waits for the full
   JSON payload before mounting anything.
-- No persistence -- refreshing the page loses the generated project (nothing
-  is written to browser storage yet).
+- The mobile long-press Terminal tab only shows output from the moment you
+  open it -- there's no replay buffer for what ran before that.
+- `openrouter/free` is a random router across whatever's currently free, so
+  code quality/reliability varies run to run more than a pinned model would.
+- The Native/Expo preset is the least battle-tested path here -- Expo's
+  dependency tree is large and WebContainer is a much thinner Node
+  environment than a real machine, so treat it as experimental relative to
+  the Web framework presets.
+
+## Fixed along the way
+
+A few real bugs worth knowing about if you're reading the history:
+
+- **Typing something like "hi" as the first message used to always scaffold
+  a demo project.** The initial system prompt required producing a working
+  app no matter what; it now allows the same empty-`actions` "Tool: none"
+  response as every other turn, including as the first message, so a
+  greeting just gets a reply. With no API key configured yet there's no
+  model to make that judgment, so a small offline heuristic
+  (`looksLikeGreeting` in `openrouter.ts`) catches obvious greetings there
+  instead of running the local fallback template.
+- **A stalled OpenRouter request could leave the UI spinning forever.**
+  The client now sets an explicit `timeout` (45s) and caps retries, so a
+  hung free-tier request surfaces as a catchable error instead of hanging.
+- **Asking to "add an index.html file" could break the dev server.** For
+  Vite-based frameworks, index.html at the project root is the real Vite
+  entry point, not an arbitrary file -- the iteration system prompt now says
+  so explicitly, so a request like that edits the existing file (or creates
+  a *different* filename for a genuinely separate static page) instead of
+  overwriting Vite's entry point with something that breaks it.

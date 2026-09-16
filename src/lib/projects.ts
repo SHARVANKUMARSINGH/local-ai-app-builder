@@ -1,4 +1,5 @@
 import type { ChatMessage, ProjectFile } from "../types";
+import type { Platform } from "./frameworks";
 
 export interface StoredProject {
   id: string;
@@ -8,6 +9,10 @@ export interface StoredProject {
   /** OpenRouter model id chosen when the project was created — fixed for
    *  the life of the project, per the "only in Create Project" setting. */
   model: string;
+  /** Also fixed at creation — see ProjectLanding.tsx / frameworks.ts. */
+  platform: Platform;
+  /** A WebFramework id when platform === "web", or "expo" when "native". */
+  framework: string;
   files: ProjectFile[];
   messages: ChatMessage[];
 }
@@ -44,7 +49,7 @@ export function getProject(id: string): StoredProject | null {
   return readIndex().find((p) => p.id === id) ?? null;
 }
 
-export function createProject(name: string, model: string): StoredProject {
+export function createProject(name: string, model: string, platform: Platform, framework: string): StoredProject {
   const now = Date.now();
   const project: StoredProject = {
     id: crypto.randomUUID(),
@@ -52,6 +57,8 @@ export function createProject(name: string, model: string): StoredProject {
     createdAt: now,
     updatedAt: now,
     model,
+    platform,
+    framework,
     files: [],
     messages: [],
   };

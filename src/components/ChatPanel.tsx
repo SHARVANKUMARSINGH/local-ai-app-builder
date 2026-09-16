@@ -9,6 +9,7 @@ interface ChatPanelProps {
   projectName: string;
   onBackToProjects: () => void;
   model: string;
+  frameworkLabel: string;
   messages: ChatMessage[];
   isGenerating: boolean;
   onSend: (prompt: string) => void;
@@ -62,6 +63,7 @@ export default function ChatPanel({
   projectName,
   onBackToProjects,
   model,
+  frameworkLabel,
   messages,
   isGenerating,
   onSend,
@@ -126,7 +128,7 @@ export default function ChatPanel({
             {apiKeyPresent ? "API key set" : "Add API key"}
           </button>
         </div>
-        <p className="mt-1 truncate text-[10px] tracking-wide text-text-dim">{model}</p>
+        <p className="mt-1 truncate text-[10px] tracking-wide text-text-dim">{frameworkLabel} · {model}</p>
       </div>
 
       {/* Mobile-only status strip: on small screens there's no editor/terminal

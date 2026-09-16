@@ -44,11 +44,63 @@ function createClient(apiKey: string): OpenAI {
     apiKey,
     // Required for OpenRouter to accept requests made directly from a browser.
     dangerouslyAllowBrowser: true,
+    // Free-tier routing can occasionally stall rather than error out cleanly.
+    // Bound it so a bad request surfaces as a catchable error within a
+    // reasonable time instead of leaving the UI spinning indefinitely.
+    timeout: 45_000,
+    maxRetries: 1,
     defaultHeaders: {
       "HTTP-Referer": "https://localhost",
       "X-Title": "local-ai-app-builder",
     },
   });
+}
+
+/**
+ * ── Per-framework briefs ─────────────────────────────────────────────────
+ * Chosen once at project creation (ProjectLanding.tsx) and fixed for the
+ * project's lifetime. Each brief tells the model what stack to use and,
+ * critically, what its "dev" script should look like — WebContainer detects
+ * "server-ready" generically from any process that opens a port, so none of
+ * these are hardcoded to Vite specifically except where that's genuinely the
+ * simplest correct choice.
+ */
+const FRAMEWORK_BRIEFS: Record<string, string> = {
+  react: `Stack: React + TypeScript + Vite. package.json must have a "dev" script that runs
+"vite". Entry point is index.html at the project root, loading /src/main.tsx.`,
+  vue: `Stack: Vue 3 + Vite (JavaScript or TypeScript, your choice). package.json must have
+a "dev" script that runs "vite". Entry point is index.html at the project root, loading
+/src/main.js (or .ts), which mounts the root Vue app.`,
+  svelte: `Stack: Svelte + Vite. package.json must have a "dev" script that runs "vite".
+Entry point is index.html at the project root, loading /src/main.js (or .ts).`,
+  vanilla: `Stack: plain JavaScript + Vite (no framework). package.json must have a "dev"
+script that runs "vite". Vite works with zero framework config for plain HTML/CSS/JS —
+just index.html, a script tag, and whatever modules you import from it.`,
+  static: `Stack: plain static HTML/CSS/JS, no build tool, no framework, no bundler,
+no package.json dependencies beyond "vite" itself. package.json must have a "dev" script
+that runs "vite" — Vite serves a plain index.html/style.css/script.js project directly
+with no config needed. Do not add React, a component framework, or any build-time
+tooling — this is meant to be inspectable, ordinary HTML/CSS/JS.`,
+  custom: `Stack: your choice — pick whatever fits the request best (could be a different
+frontend framework, a small Node/Express server, a CLI tool, anything). There is no
+framework constraint here. Whatever you choose, package.json must have a "dev" script
+that starts it and, if it's a web app, binds to a port and prints/serves on it —
+WebContainer detects "server ready" generically from any process opening a port, not
+just Vite, so any dev server works.`,
+  expo: `Stack: React Native + Expo, TypeScript. This runs inside a browser-based
+WebContainer with no mobile simulator available, so the live preview shown to the user
+is Expo's WEB target (react-native-web) — say so plainly in your summary the first time,
+so the user knows they're seeing a web-rendered approximation, not a native build.
+package.json must have a "dev" script that runs
+"expo start --web --port 5173 --non-interactive" (non-interactive avoids CLI prompts
+hanging in a terminal with no human to answer them). Use only React Native components
+and APIs that are supported by react-native-web (View, Text, StyleSheet, Pressable,
+ScrollView, etc.) — anything relying on a real native module won't render in this
+preview.`,
+};
+
+function frameworkBrief(framework: string): string {
+  return FRAMEWORK_BRIEFS[framework] ?? FRAMEWORK_BRIEFS.custom;
 }
 
 /**
@@ -90,11 +142,13 @@ nothing else:
 - Every other field name is invalid — do not add "description", "reason", etc. to an action.
 - "summary" may use Markdown (backticks, bold, lists) — it's rendered as Markdown in the UI.
 
-Tool: none — if the user is asking a question, wants an explanation of existing code,
-or is just chatting and genuinely needs no file or terminal change, return
+Tool: none — if the message is a greeting ("hi", "hello"), a question, a request to
+explain existing code, or otherwise genuinely needs no file or terminal change, return
 "actions": []  (an empty array) and put your complete answer in "summary". This is a
-normal, expected response — not a fallback or a failure. Do NOT invent a file edit or
-a command just to have something in "actions" when nothing actually needs to change.
+normal, expected response — including as the very FIRST message of a brand new project
+if that first message isn't actually an app request. Do NOT scaffold a project just
+because it's the first message, and do NOT invent a file edit or command just to have
+something in "actions" when nothing actually needs to change.
 
 Environment note: this project runs inside a WebContainer that already has Node.js
 and npm pre-installed and on PATH. Never write a "run_command" that tries to install
@@ -102,38 +156,49 @@ Node, nvm, or a system package manager (apt/brew/etc.) — none of that exists o
 needed here. "run_command" should only ever be things like \`npm install <pkg>\`,
 \`npm run <script>\`, or a one-off \`node\` / \`npx\` invocation.`;
 
-const INITIAL_SYSTEM_PROMPT = `You are an expert React + Vite engineer working inside an in-browser AI app builder,
-similar to Bolt.new or Lovable. A person describes an app in plain English; you return
-one that actually runs.
+const VITE_INDEX_HTML_NOTE = `
+index.html note: for Vite-based projects, index.html at the project root is THE Vite
+entry point, not an arbitrary file — it must keep its <script type="module"
+src="/src/..."> tag pointing at the real entry file. If the project already has one
+(it will, after the first message) and the user asks to "add an index.html file" or
+similar, they almost always mean editing this existing file (or adding a DIFFERENT
+static HTML file under public/), not replacing the Vite entry point with a plain
+static page — doing that breaks the dev server. If they genuinely want a second,
+separate static page, give it its own filename (e.g. public/about.html), not
+"index.html".`;
 
-Given the user's request, respond with a SMALL, RUNNABLE React + TypeScript + Vite
-project that satisfies it, expressed entirely as "write_file" actions (this is the
-first message for this project, so there's no existing code yet — "Tool: none" doesn't
-apply here; always produce a working app).
+function buildInitialSystemPrompt(framework: string): string {
+  return `You are an expert software engineer working inside an in-browser AI app builder,
+similar to Bolt.new or Lovable. A person describes something in plain English; when it's
+an actual app request, you return one that runs.
+
+${frameworkBrief(framework)}
 
 ${RESPONSE_FORMAT_SPEC}
 
-Project rules:
-- Always include a valid "package.json" with a "dev" script ("vite") and correct dependencies.
-- Keep the dependency list minimal (react, react-dom, vite, @vitejs/plugin-react, typescript).
-  Only add another dependency if the request specifically calls for it.
+Project rules (only apply once you've decided this IS an app request — see "Tool: none" above):
 - Write real, complete file contents — no placeholders, no "// TODO", no stub functions.
-- Prefer functional components, hooks, and either inline styles or one small CSS file —
-  skip external UI/CSS frameworks unless the user explicitly asks for one.
 - Match the complexity of the request: a "todo list" doesn't need five files and a
-  state-management library.
+  state-management library. Keep dependencies minimal — only add one if the request
+  specifically needs it.
 - The app must run standalone with \`npm install && npm run dev\` — don't reference
   any file, asset, or env var you didn't also create.
 - Don't include any "run_command" actions on this initial generation — \`npm install\`
   already runs automatically against the package.json you return.`;
+}
 
-const ITERATION_SYSTEM_PROMPT = `You are an expert React + Vite engineer working inside an in-browser AI app builder.
+function buildIterationSystemPrompt(framework: string): string {
+  const isViteBased = framework !== "custom" && framework !== "expo";
+  return `You are an expert software engineer working inside an in-browser AI app builder.
 You are editing a project that is ALREADY mounted, installed, and running live in the
 user's browser (a WebContainer) — a real, running virtual filesystem, not a
 hypothetical one. The full current contents of every file are given to you as context
 below. Read them before responding; you're editing this codebase, not starting over.
 
+${frameworkBrief(framework)}
+
 ${RESPONSE_FORMAT_SPEC}
+${isViteBased ? VITE_INDEX_HTML_NOTE : ""}
 
 Editing rules:
 - Only emit "write_file" for files that are new or whose contents actually changed —
@@ -152,6 +217,7 @@ Editing rules:
   code, rename things, or "clean up" as a side effect.
 - If the request is ambiguous, make the most reasonable interpretation and say what you
   assumed in "summary", rather than responding with only clarifying questions.`;
+}
 
 export interface GenerationResult {
   actions: AiAction[];
@@ -168,6 +234,17 @@ function isPlaceholderKey(key: string): boolean {
  *  the "add your API key" popup on load. */
 export function hasUsableApiKey(): boolean {
   return !isPlaceholderKey(resolveApiKey());
+}
+
+const GREETING_RE = /^(hi|hello|hey|yo|sup|hiya|howdy|test|hi there|hello there|what can you do\??)[!.\s]*$/i;
+
+/** Cheap, offline heuristic used ONLY for the no-API-key fallback path,
+ *  where there's no model available to make this judgment itself — a real
+ *  API call relies on the model following "Tool: none" instead. Without
+ *  this, typing "hi" with no key configured yet produced a random demo
+ *  template project, which felt arbitrary. */
+function looksLikeGreeting(prompt: string): boolean {
+  return GREETING_RE.test(prompt.trim());
 }
 
 /** Best-effort extraction of a JSON object from a model response that may be
@@ -216,8 +293,8 @@ function normalizeResult(parsed: unknown): { actions: AiAction[]; summary: strin
     throw new Error('Model response is missing an "actions" array');
   }
   // An empty array is valid and expected — "Tool: none" for pure Q&A/chat
-  // turns that need no file or terminal change. Only the shape of each
-  // *present* action is strictly enforced.
+  // turns (including a first-message greeting) that need no file or
+  // terminal change. Only the shape of each *present* action is enforced.
   const actions = raw.actions.map(validateAction);
   return {
     actions,
@@ -252,12 +329,14 @@ function actionsFromTemplate(prompt: string): { actions: AiAction[]; summary: st
  * id, chosen once at project-creation time — see ProjectLanding.tsx) and
  * returns a strictly-validated, ordered list of actions (file writes, file
  * deletes, and terminal commands — possibly none at all, for a pure Q&A
- * turn) to apply.
+ * turn) to apply. `framework` (also fixed at project creation) selects which
+ * stack brief and index.html guidance the system prompt uses.
  *
  * When `existingFiles` is non-empty, this runs in "iteration" mode: the full
  * current project is sent as context so the model can read and edit the real,
  * already-running codebase — the virtual filesystem — instead of generating
- * blind. With no existing files, it generates a fresh project.
+ * blind. With no existing files, it generates a fresh project (or just
+ * replies, if the first message isn't actually an app request).
  *
  * If no real API key has been configured, or the request fails for any
  * reason, this falls back to a local starter template (as write_file actions)
@@ -266,7 +345,8 @@ function actionsFromTemplate(prompt: string): { actions: AiAction[]; summary: st
 export async function generateProjectFromPrompt(
   prompt: string,
   existingFiles: ProjectFile[] = [],
-  model: string = OPENROUTER_MODEL
+  model: string = OPENROUTER_MODEL,
+  framework: string = "react"
 ): Promise<GenerationResult> {
   const apiKey = resolveApiKey();
   const isIteration = existingFiles.length > 0;
@@ -278,6 +358,15 @@ export async function generateProjectFromPrompt(
     );
     if (isIteration) {
       return { actions: [], summary: "No API key configured — can't edit without one.", usedFallback: true };
+    }
+    if (looksLikeGreeting(prompt)) {
+      return {
+        actions: [],
+        summary:
+          "Hi! Add an OpenRouter API key (top-right) and describe an app — e.g. " +
+          '"a pomodoro timer" or "a markdown note app" — and I\'ll build it live.',
+        usedFallback: false,
+      };
     }
     return { ...actionsFromTemplate(prompt), usedFallback: true };
   }
@@ -292,15 +381,16 @@ export async function generateProjectFromPrompt(
       model,
       temperature: 0.3,
       messages: [
-        { role: "system", content: isIteration ? ITERATION_SYSTEM_PROMPT : INITIAL_SYSTEM_PROMPT },
+        {
+          role: "system",
+          content: isIteration ? buildIterationSystemPrompt(framework) : buildInitialSystemPrompt(framework),
+        },
         { role: "user", content: userContent },
       ],
     });
 
     const raw = completion.choices[0]?.message?.content ?? "";
     const { actions, summary } = normalizeResult(extractJson(raw));
-    // NOTE: zero actions is valid (Tool: none) — only a genuinely malformed
-    // response (caught above by normalizeResult/extractJson) is an error.
     return { actions, summary, usedFallback: false };
   } catch (err) {
     console.error("[openrouter] Generation failed:", err);
@@ -309,6 +399,13 @@ export async function generateProjectFromPrompt(
       // Don't silently fall back to a throwaway template for an edit —
       // that would blow away the user's real, running project.
       return { actions: [], summary: `Edit failed: ${message}`, usedFallback: false };
+    }
+    if (looksLikeGreeting(prompt)) {
+      return {
+        actions: [],
+        summary: `Hi! (The model call failed just now: ${message} — try again, or describe an app to build.)`,
+        usedFallback: false,
+      };
     }
     const fallback = actionsFromTemplate(prompt);
     return {

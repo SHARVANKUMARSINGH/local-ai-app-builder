@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { useState, type MouseEvent } from "react";
 import type { StoredProject } from "../lib/projects";
 import { createProject, deleteProject, listProjects } from "../lib/projects";
+import { WEB_FRAMEWORKS, NATIVE_FRAMEWORK, frameworkInitials, frameworkById, type Platform } from "../lib/frameworks";
 import ModelPicker from "./ModelPicker";
 
 interface ProjectLandingProps {
@@ -18,17 +19,27 @@ function formatRelativeTime(ts: number): string {
   return `${days}d ago`;
 }
 
+function FrameworkIcon({ label }: { label: string }) {
+  return (
+    <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-border-soft bg-panel-raised text-[10px] font-medium text-text-muted">
+      {frameworkInitials(label)}
+    </span>
+  );
+}
+
 export default function ProjectLanding({ onOpenProject }: ProjectLandingProps) {
   const [projects, setProjects] = useState<StoredProject[]>(() => listProjects());
   const [name, setName] = useState("");
   const [model, setModel] = useState("openrouter/free");
+  const [platform, setPlatform] = useState<Platform>("web");
+  const [framework, setFramework] = useState("react");
 
   const handleCreate = () => {
-    const project = createProject(name, model);
+    const project = createProject(name, model, platform, platform === "native" ? "expo" : framework);
     onOpenProject(project);
   };
 
-  const handleDelete = (id: string, e: React.MouseEvent) => {
+  const handleDelete = (id: string, e: MouseEvent) => {
     e.stopPropagation();
     if (!confirm("Delete this project? This can't be undone.")) return;
     deleteProject(id);
@@ -45,7 +56,7 @@ export default function ProjectLanding({ onOpenProject }: ProjectLandingProps) {
 
         <div className="glow-lg rounded-xl border border-border-soft bg-panel p-5">
           <h2 className="text-sm font-medium text-text">Create a project</h2>
-          <div className="mt-3 space-y-3">
+          <div className="mt-3 space-y-4">
             <div>
               <label className="mb-1.5 block text-[11px] text-text-dim">Name</label>
               <input
@@ -58,8 +69,71 @@ export default function ProjectLanding({ onOpenProject }: ProjectLandingProps) {
               />
             </div>
 
-            {/* Per the brief: model choice is a Create Project–only setting —
-                it's fixed for the project's lifetime once created. */}
+            {/* Platform + framework + model are all Create Project–only settings —
+                each is fixed for the project's lifetime once created. */}
+            <div>
+              <label className="mb-1.5 block text-[11px] text-text-dim">Platform</label>
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => setPlatform("web")}
+                  className={
+                    platform === "web"
+                      ? "rounded-md border border-white bg-white/10 px-3 py-2 text-sm text-text"
+                      : "rounded-md border border-border bg-panel-raised px-3 py-2 text-sm text-text-muted hover:border-border-soft"
+                  }
+                >
+                  Web
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPlatform("native")}
+                  className={
+                    platform === "native"
+                      ? "rounded-md border border-white bg-white/10 px-3 py-2 text-sm text-text"
+                      : "rounded-md border border-border bg-panel-raised px-3 py-2 text-sm text-text-muted hover:border-border-soft"
+                  }
+                >
+                  Native
+                </button>
+              </div>
+            </div>
+
+            {platform === "web" ? (
+              <div>
+                <label className="mb-1.5 block text-[11px] text-text-dim">Framework</label>
+                <div className="grid grid-cols-3 gap-2">
+                  {WEB_FRAMEWORKS.map((f) => (
+                    <button
+                      key={f.id}
+                      type="button"
+                      onClick={() => setFramework(f.id)}
+                      title={f.blurb}
+                      className={
+                        framework === f.id
+                          ? "flex flex-col items-center gap-1.5 rounded-md border border-white bg-white/10 px-2 py-3 text-center"
+                          : "flex flex-col items-center gap-1.5 rounded-md border border-border bg-panel-raised px-2 py-3 text-center hover:border-border-soft"
+                      }
+                    >
+                      <FrameworkIcon label={f.label} />
+                      <span className={framework === f.id ? "text-[11px] text-text" : "text-[11px] text-text-muted"}>
+                        {f.label}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+                <p className="mt-1.5 text-[11px] text-text-dim">{frameworkById(framework).blurb}</p>
+              </div>
+            ) : (
+              <div className="flex items-center gap-3 rounded-md border border-border-soft bg-panel-raised px-3 py-3">
+                <FrameworkIcon label={NATIVE_FRAMEWORK.label} />
+                <div className="min-w-0">
+                  <p className="text-sm text-text">{NATIVE_FRAMEWORK.label}</p>
+                  <p className="text-[11px] text-text-dim">{NATIVE_FRAMEWORK.blurb}</p>
+                </div>
+              </div>
+            )}
+
             <ModelPicker value={model} onChange={setModel} />
 
             <button
@@ -81,11 +155,12 @@ export default function ProjectLanding({ onOpenProject }: ProjectLandingProps) {
                   onClick={() => onOpenProject(p)}
                   className="flex w-full items-center gap-3 rounded-lg border border-border-soft bg-panel px-3 py-2.5 text-left hover:border-border"
                 >
-                  <span className="glow h-1.5 w-1.5 shrink-0 rounded-full bg-white/70" />
+                  <FrameworkIcon label={frameworkById(p.framework ?? "react").label} />
                   <span className="min-w-0 flex-1">
                     <span className="block truncate text-sm text-text">{p.name}</span>
                     <span className="block truncate text-[11px] text-text-dim">
-                      {p.files.length} file{p.files.length === 1 ? "" : "s"} · {p.model} · {formatRelativeTime(p.updatedAt)}
+                      {p.files.length} file{p.files.length === 1 ? "" : "s"} ·{" "}
+                      {frameworkById(p.framework ?? "react").label} · {p.model} · {formatRelativeTime(p.updatedAt)}
                     </span>
                   </span>
                   <span

@@ -10,6 +10,7 @@ import type { TerminalHandle } from "./Terminal";
 import { generateProjectFromPrompt, hasUsableApiKey } from "../lib/openrouter";
 import { getStoredApiKey, setStoredApiKey, clearStoredApiKey } from "../lib/apiKeyStore";
 import { saveProject, type StoredProject } from "../lib/projects";
+import { frameworkById } from "../lib/frameworks";
 import {
   bootWebContainer,
   mountAndRun,
@@ -159,7 +160,8 @@ export default function Builder({ project, onBackToProjects }: BuilderProps) {
       const { actions, summary, usedFallback } = await generateProjectFromPrompt(
         prompt,
         isFirstGeneration ? [] : filesRef.current,
-        project.model
+        project.model,
+        project.framework ?? "react"
       );
 
       // Empty actions is valid ("Tool: none") — a pure Q&A/chat turn that
@@ -243,7 +245,7 @@ export default function Builder({ project, onBackToProjects }: BuilderProps) {
     } finally {
       setIsGenerating(false);
     }
-  }, [appendMessage, refreshVfs, writeToTerminals, project.model]);
+  }, [appendMessage, refreshVfs, writeToTerminals, project.model, project.framework]);
 
   const handleSaveApiKey = useCallback((key: string) => {
     setStoredApiKey(key);
@@ -300,6 +302,7 @@ export default function Builder({ project, onBackToProjects }: BuilderProps) {
           projectName={project.name}
           onBackToProjects={onBackToProjects}
           model={project.model}
+          frameworkLabel={frameworkById(project.framework ?? "react").label}
           messages={messages}
           isGenerating={isGenerating}
           onSend={handleSend}
