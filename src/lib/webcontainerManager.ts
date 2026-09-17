@@ -1,6 +1,32 @@
 import { WebContainer } from "@webcontainer/api";
-import type { FileSystemTree } from "@webcontainer/api";
+import type { FileSystemTree, WebContainerProcess } from "@webcontainer/api";
 import type { ProjectFile } from "../types";
+
+/**
+ * Waits for a spawned process to exit, but kills it and rejects if it takes
+ * longer than `ms`. Without this, a genuinely stuck `npm install` (bad
+ * network inside the container, a postinstall script that hangs, etc.)
+ * would leave the whole generating flow spinning forever with no way out —
+ * this guarantees it eventually surfaces as a catchable, retryable error.
+ */
+function waitForExit(proc: WebContainerProcess, ms: number, label: string): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      proc.kill();
+      reject(new Error(`${label} timed out after ${Math.round(ms / 1000)}s and was stopped`));
+    }, ms);
+    proc.exit.then(
+      (code) => {
+        clearTimeout(timer);
+        resolve(code);
+      },
+      (err) => {
+        clearTimeout(timer);
+        reject(err);
+      }
+    );
+  });
+}
 
 /**
  * WebContainer.boot() may only be called ONCE per page load — calling it a
@@ -74,7 +100,7 @@ export async function mountAndRun(
       write: (chunk) => onOutput(chunk),
     })
   );
-  const installExit = await install.exit;
+  const installExit = await waitForExit(install, 180_000, "npm install");
   if (installExit !== 0) {
     onOutput(`\r\n\x1b[31mnpm install exited with code ${installExit}\x1b[0m\r\n`);
     throw new Error(`npm install failed with exit code ${installExit}`);
@@ -193,7 +219,7 @@ export async function runCommands(
     onOutput(`\r\n$ ${command}\r\n`);
     const proc = await container.spawn(cmd, args);
     proc.output.pipeTo(new WritableStream({ write: (chunk) => onOutput(chunk) }));
-    const exit = await proc.exit;
+    const exit = await waitForExit(proc, 120_000, `"${command}"`);
     if (exit !== 0) {
       onOutput(`\r\n\x1b[31m"${command}" exited with code ${exit}\x1b[0m\r\n`);
     }

@@ -44,6 +44,7 @@ export default function Builder({ project, onBackToProjects }: BuilderProps) {
     project.files.find((f) => f.path === "src/App.tsx")?.path ?? project.files[0]?.path ?? null
   );
   const [isGenerating, setIsGenerating] = useState(false);
+  const [streamingText, setStreamingText] = useState("");
   const [phase, setPhase] = useState<BootPhase>("idle");
   const [serverUrl, setServerUrl] = useState<string | null>(null);
   const [apiKeyModalOpen, setApiKeyModalOpen] = useState(() => !hasUsableApiKey());
@@ -144,8 +145,11 @@ export default function Builder({ project, onBackToProjects }: BuilderProps) {
   }, []);
 
   const appendMessage = useCallback(
-    (role: ChatMessage["role"], content: string, actions?: ActionLogEntry[]) => {
-      setMessages((prev) => [...prev, { id: nextId(), role, content, createdAt: Date.now(), actions }]);
+    (role: ChatMessage["role"], content: string, actions?: ActionLogEntry[], rawResponse?: string) => {
+      setMessages((prev) => [
+        ...prev,
+        { id: nextId(), role, content, createdAt: Date.now(), actions, rawResponse: rawResponse || undefined },
+      ]);
     },
     []
   );
@@ -153,21 +157,23 @@ export default function Builder({ project, onBackToProjects }: BuilderProps) {
   const handleSend = useCallback(async (prompt: string) => {
     appendMessage("user", prompt);
     setIsGenerating(true);
+    setStreamingText("");
 
     const isFirstGeneration = !hasRunInstallRef.current;
 
     try {
-      const { actions, summary, usedFallback } = await generateProjectFromPrompt(
+      const { actions, summary, usedFallback, rawResponse } = await generateProjectFromPrompt(
         prompt,
         isFirstGeneration ? [] : filesRef.current,
         project.model,
-        project.framework ?? "react"
+        project.framework ?? "react",
+        setStreamingText
       );
 
       // Empty actions is valid ("Tool: none") — a pure Q&A/chat turn that
       // needs no file or terminal change at all.
       if (actions.length === 0) {
-        appendMessage("assistant", summary);
+        appendMessage("assistant", summary, undefined, rawResponse);
         return;
       }
 
@@ -194,7 +200,8 @@ export default function Builder({ project, onBackToProjects }: BuilderProps) {
       appendMessage(
         "assistant",
         usedFallback ? `${summary}\n\n*(using local fallback — see the OpenRouter setup note)*` : summary,
-        log
+        log,
+        rawResponse
       );
 
       const newProjectFiles: ProjectFile[] = writes.map((w) => ({ path: w.path!, contents: w.contents! }));
@@ -244,6 +251,7 @@ export default function Builder({ project, onBackToProjects }: BuilderProps) {
       writeToTerminals(`\r\n\x1b[31m${message}\x1b[0m\r\n`);
     } finally {
       setIsGenerating(false);
+      setStreamingText("");
     }
   }, [appendMessage, refreshVfs, writeToTerminals, project.model, project.framework]);
 
@@ -305,6 +313,7 @@ export default function Builder({ project, onBackToProjects }: BuilderProps) {
           frameworkLabel={frameworkById(project.framework ?? "react").label}
           messages={messages}
           isGenerating={isGenerating}
+          streamingText={streamingText}
           onSend={handleSend}
           apiKeyPresent={hasKey}
           onManageApiKey={() => setApiKeyModalOpen(true)}

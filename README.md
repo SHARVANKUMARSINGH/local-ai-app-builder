@@ -212,11 +212,31 @@ A few real bugs worth knowing about if you're reading the history:
   (`looksLikeGreeting` in `openrouter.ts`) catches obvious greetings there
   instead of running the local fallback template.
 - **A stalled OpenRouter request could leave the UI spinning forever.**
-  The client now sets an explicit `timeout` (45s) and caps retries, so a
-  hung free-tier request surfaces as a catchable error instead of hanging.
+  The client sets an explicit `timeout` (90s, generous since a full
+  multi-file generation streams for a while) and caps retries, so a hung
+  free-tier request surfaces as a catchable error instead of hanging.
+  `npm install` and any AI-run terminal command are now similarly bounded
+  (`waitForExit` in `webcontainerManager.ts`) and get killed, not just
+  waited on forever, if they blow past 2-3 minutes.
 - **Asking to "add an index.html file" could break the dev server.** For
   Vite-based frameworks, index.html at the project root is the real Vite
   entry point, not an arbitrary file -- the iteration system prompt now says
   so explicitly, so a request like that edits the existing file (or creates
   a *different* filename for a genuinely separate static page) instead of
   overwriting Vite's entry point with something that breaks it.
+- **"Generating…" stayed on screen well after files were added, looking
+  stuck.** It wasn't actually stuck -- `npm install` for a fresh project
+  can genuinely take a minute-plus, especially on a phone -- but the label
+  never changed to say so. The generating indicator now reads `phase`
+  (`generatingLabel` in `ChatPanel.tsx`) and says "Installing
+  dependencies…" / "Starting dev server…" instead of a flat "Generating…"
+  the whole time.
+- **A parse failure only ever showed a generic error string.** The
+  generation call now streams (`stream: true`), and every message that hit
+  a fallback or parse error carries the AI's exact raw response
+  (`rawResponse` on `ChatMessage`) behind a "Show raw response" toggle, so
+  a bad response is inspectable instead of just "No JSON object found."
+  The generating indicator itself is now a real Unicode spinner (braille
+  frames, `Spinner.tsx`) that's clickable while a request is in flight --
+  click it to watch the model's response accumulate live, the same
+  transparency you'd get watching Claude's own output stream in.

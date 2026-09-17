@@ -44,10 +44,11 @@ function createClient(apiKey: string): OpenAI {
     apiKey,
     // Required for OpenRouter to accept requests made directly from a browser.
     dangerouslyAllowBrowser: true,
-    // Free-tier routing can occasionally stall rather than error out cleanly.
-    // Bound it so a bad request surfaces as a catchable error within a
-    // reasonable time instead of leaving the UI spinning indefinitely.
-    timeout: 45_000,
+    // Free-tier routing can occasionally stall rather than error out cleanly,
+    // and a full multi-file generation can legitimately take a while to
+    // stream. Bound it generously so a genuine hang still surfaces as a
+    // catchable error, without aborting a slow-but-working response.
+    timeout: 90_000,
     maxRetries: 1,
     defaultHeaders: {
       "HTTP-Referer": "https://localhost",
@@ -223,6 +224,11 @@ export interface GenerationResult {
   actions: AiAction[];
   summary: string;
   usedFallback: boolean;
+  /** The AI's raw, unparsed response text (or an empty string if the call
+   *  never returned one, e.g. a network/timeout failure). Kept so the UI can
+   *  offer a "show raw response" debug view when parsing fails, instead of
+   *  the user only ever seeing a generic error string. */
+  rawResponse?: string;
 }
 
 function isPlaceholderKey(key: string): boolean {
@@ -254,7 +260,12 @@ function extractJson(raw: string): unknown {
   const candidate = fenced ? fenced[1] : raw;
   const start = candidate.indexOf("{");
   const end = candidate.lastIndexOf("}");
-  if (start === -1 || end === -1) throw new Error("No JSON object found in model response");
+  if (start === -1 || end === -1) {
+    const preview = raw.trim().slice(0, 200);
+    throw new Error(
+      preview ? `Model didn't return JSON — it said: "${preview}${raw.length > 200 ? "…" : ""}"` : "Model returned an empty response"
+    );
+  }
   return JSON.parse(candidate.slice(start, end + 1));
 }
 
@@ -332,6 +343,10 @@ function actionsFromTemplate(prompt: string): { actions: AiAction[]; summary: st
  * turn) to apply. `framework` (also fixed at project creation) selects which
  * stack brief and index.html guidance the system prompt uses.
  *
+ * The request streams: `onChunk`, if given, is called with the accumulated
+ * raw text so far as tokens arrive, so the UI can show the model "typing"
+ * live (clicking the generating indicator) instead of a plain wait.
+ *
  * When `existingFiles` is non-empty, this runs in "iteration" mode: the full
  * current project is sent as context so the model can read and edit the real,
  * already-running codebase — the virtual filesystem — instead of generating
@@ -346,7 +361,8 @@ export async function generateProjectFromPrompt(
   prompt: string,
   existingFiles: ProjectFile[] = [],
   model: string = OPENROUTER_MODEL,
-  framework: string = "react"
+  framework: string = "react",
+  onChunk?: (accumulatedText: string) => void
 ): Promise<GenerationResult> {
   const apiKey = resolveApiKey();
   const isIteration = existingFiles.length > 0;
@@ -371,15 +387,19 @@ export async function generateProjectFromPrompt(
     return { ...actionsFromTemplate(prompt), usedFallback: true };
   }
 
+  let raw = "";
   try {
     const client = createClient(apiKey);
-    const userContent = isIteration
-      ? `Current project files:\n\n${renderExistingFiles(existingFiles)}\n\n---\n\nUser request: ${prompt}`
-      : prompt;
+    const userContent =
+      (isIteration
+        ? `Current project files:\n\n${renderExistingFiles(existingFiles)}\n\n---\n\nUser request: ${prompt}`
+        : prompt) +
+      '\n\n(Respond with ONLY the JSON object described in the system prompt — no other text before or after it.)';
 
-    const completion = await client.chat.completions.create({
+    const stream = await client.chat.completions.create({
       model,
       temperature: 0.3,
+      stream: true,
       messages: [
         {
           role: "system",
@@ -389,22 +409,30 @@ export async function generateProjectFromPrompt(
       ],
     });
 
-    const raw = completion.choices[0]?.message?.content ?? "";
+    for await (const chunk of stream) {
+      const delta = chunk.choices[0]?.delta?.content ?? "";
+      if (delta) {
+        raw += delta;
+        onChunk?.(raw);
+      }
+    }
+
     const { actions, summary } = normalizeResult(extractJson(raw));
-    return { actions, summary, usedFallback: false };
+    return { actions, summary, usedFallback: false, rawResponse: raw };
   } catch (err) {
     console.error("[openrouter] Generation failed:", err);
     const message = err instanceof Error ? err.message : String(err);
     if (isIteration) {
       // Don't silently fall back to a throwaway template for an edit —
       // that would blow away the user's real, running project.
-      return { actions: [], summary: `Edit failed: ${message}`, usedFallback: false };
+      return { actions: [], summary: `Edit failed: ${message}`, usedFallback: false, rawResponse: raw };
     }
     if (looksLikeGreeting(prompt)) {
       return {
         actions: [],
         summary: `Hi! (The model call failed just now: ${message} — try again, or describe an app to build.)`,
         usedFallback: false,
+        rawResponse: raw,
       };
     }
     const fallback = actionsFromTemplate(prompt);
@@ -412,6 +440,7 @@ export async function generateProjectFromPrompt(
       ...fallback,
       summary: `${fallback.summary} (AI call failed — showing a local fallback instead: ${message})`,
       usedFallback: true,
+      rawResponse: raw,
     };
   }
 }

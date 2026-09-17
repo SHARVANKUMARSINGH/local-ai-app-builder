@@ -7,6 +7,10 @@ export interface ChatMessage {
    *  as small icon chips under the message (e.g. "+2 Files added",
    *  "$ npm install axios"). */
   actions?: ActionLogEntry[];
+  /** The AI's raw, unparsed response text, kept only when something went
+   *  wrong (a parse failure, a fallback) so the message can offer a "show
+   *  raw response" debug toggle instead of just a generic error string. */
+  rawResponse?: string;
 }
 
 /** The strict, machine-checked action types the AI's JSON response may

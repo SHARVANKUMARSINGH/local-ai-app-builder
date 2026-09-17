@@ -2,6 +2,7 @@ import { useState, type FormEvent, type KeyboardEvent, type MouseEvent } from "r
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { ActionLogEntry, BootPhase, ChatMessage } from "../types";
+import Spinner from "./Spinner";
 
 type WorkspaceTab = "files" | "preview" | "terminal";
 
@@ -12,6 +13,9 @@ interface ChatPanelProps {
   frameworkLabel: string;
   messages: ChatMessage[];
   isGenerating: boolean;
+  /** The AI's response accumulating live, token by token, while a request is
+   *  in flight — shown when the generating indicator is clicked. */
+  streamingText: string;
   onSend: (prompt: string) => void;
   apiKeyPresent: boolean;
   onManageApiKey: () => void;
@@ -29,6 +33,17 @@ const PHASE_LABEL: Record<BootPhase, string> = {
   ready: "Live",
   error: "Error",
 };
+
+/** While isGenerating is true, `phase` tells us WHY it's still going —
+ *  "Generating…" the whole time (even once files are already added and
+ *  npm install is running for a minute) reads as stuck. This makes the
+ *  label track what's actually happening. */
+function generatingLabel(phase: BootPhase): string {
+  if (phase === "mounting") return "Mounting files…";
+  if (phase === "installing") return "Installing dependencies…";
+  if (phase === "starting") return "Starting dev server…";
+  return "Generating…";
+}
 
 /** Groups an action log into count-based chips ("+2 Files added") for the
  *  file actions, and one chip per command (commands are heterogeneous, so
@@ -59,6 +74,28 @@ function ActionChips({ actions }: { actions: ActionLogEntry[] }) {
   );
 }
 
+/** Persistent per-message "show error log" — collapsed by default, reveals
+ *  the AI's exact raw response text so a parse failure or fallback isn't
+ *  just a vague error string. */
+function RawResponseToggle({ text }: { text: string }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="mt-1.5">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="text-[10px] text-text-dim underline underline-offset-2 hover:text-text-muted"
+      >
+        {open ? "Hide" : "Show"} raw response
+      </button>
+      {open && (
+        <pre className="mt-1 max-h-48 overflow-y-auto whitespace-pre-wrap break-words rounded border border-border-soft bg-panel-raised p-2 font-mono text-[10px] text-text-muted">
+          {text}
+        </pre>
+      )}
+    </div>
+  );
+}
+
 export default function ChatPanel({
   projectName,
   onBackToProjects,
@@ -66,6 +103,7 @@ export default function ChatPanel({
   frameworkLabel,
   messages,
   isGenerating,
+  streamingText,
   onSend,
   apiKeyPresent,
   onManageApiKey,
@@ -75,6 +113,7 @@ export default function ChatPanel({
 }: ChatPanelProps) {
   const [draft, setDraft] = useState("");
   const [menuPos, setMenuPos] = useState<{ x: number; y: number } | null>(null);
+  const [showLiveStream, setShowLiveStream] = useState(false);
 
   const submit = (e: FormEvent) => {
     e.preventDefault();
@@ -136,15 +175,15 @@ export default function ChatPanel({
           background. Long-press anywhere in the message list below to open
           Files/Preview/Terminal full-screen. */}
       <div className="flex items-center gap-2 border-b border-border px-4 py-2 md:hidden">
-        <span
-          className={
-            phase === "error"
-              ? "h-1.5 w-1.5 rounded-full bg-error"
-              : phase === "ready"
-                ? "glow h-1.5 w-1.5 rounded-full bg-white"
-                : "glow status-dot-pulse h-1.5 w-1.5 rounded-full bg-white"
-          }
-        />
+        {phase === "error" ? (
+          <span className="h-1.5 w-1.5 rounded-full bg-error" />
+        ) : phase === "ready" ? (
+          <span className="glow h-1.5 w-1.5 rounded-full bg-white" />
+        ) : phase === "idle" ? (
+          <span className="h-1.5 w-1.5 rounded-full bg-text-dim" />
+        ) : (
+          <Spinner className="text-text-muted" />
+        )}
         <span className="text-[11px] text-text-muted">{PHASE_LABEL[phase]}</span>
         {phase === "ready" && serverUrl ? (
           <a
@@ -188,14 +227,26 @@ export default function ChatPanel({
                 m.content
               )}
               {m.actions && m.actions.length > 0 && <ActionChips actions={m.actions} />}
+              {m.rawResponse && <RawResponseToggle text={m.rawResponse} />}
             </div>
           </div>
         ))}
 
         {isGenerating && (
-          <div className="flex items-center gap-2 text-xs text-text-dim">
-            <span className="glow status-dot-pulse h-1.5 w-1.5 rounded-full bg-white" />
-            Generating…
+          <div className="text-xs text-text-dim">
+            <button
+              onClick={() => setShowLiveStream((v) => !v)}
+              className="flex items-center gap-2 hover:text-text-muted"
+            >
+              <Spinner className="text-text-muted" />
+              <span>{generatingLabel(phase)}</span>
+              <span className="text-[10px] text-text-dim">{showLiveStream ? "hide live ▲" : "show live ▼"}</span>
+            </button>
+            {showLiveStream && (
+              <pre className="mt-1.5 max-h-40 overflow-y-auto whitespace-pre-wrap break-words rounded border border-border-soft bg-panel-raised p-2 font-mono text-[11px] text-text-muted">
+                {streamingText || "Waiting for the model to start responding…"}
+              </pre>
+            )}
           </div>
         )}
       </div>
