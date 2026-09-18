@@ -174,6 +174,15 @@ list to open a menu -- Files / Preview / Terminal -- each opening full-screen
 mobile at all; it's the exact same code path as desktop, running in the
 background regardless of which panel (if any) is currently open.
 
+## Favicon
+
+`public/favicon.svg` is drawn, not borrowed — `scripts/generate_favicon.py`
+procedurally builds an original mark (a terminal-prompt chevron + cursor
+block, computed from real geometry, not a copied path) and writes it to both
+`scripts/favicon.svg` and `public/favicon.svg`. Re-run
+`python3 scripts/generate_favicon.py` after tweaking the constants at the top
+of the script (colors, chevron angle, stroke width) to regenerate it.
+
 ## Cross-origin isolation
 
 WebContainers need `Cross-Origin-Embedder-Policy: require-corp` and
