@@ -16,8 +16,10 @@ export interface ChatMessage {
 /** The strict, machine-checked action types the AI's JSON response may
  *  contain. Every AI response is validated against this shape before
  *  anything is applied to the virtual filesystem — see
- *  src/lib/openrouter.ts's `normalizeResult`. */
-export type AiActionType = "write_file" | "delete_file" | "run_command";
+ *  src/lib/openrouter.ts's `normalizeResult`. "summary" is a tool like the
+ *  other three, not a separate top-level field — every response's chat text
+ *  is carried as a `{ "type": "summary", "text": "..." }` entry in `actions`. */
+export type AiActionType = "write_file" | "delete_file" | "run_command" | "summary";
 
 export interface AiAction {
   type: AiActionType;
@@ -27,6 +29,8 @@ export interface AiAction {
   contents?: string;
   /** Required for run_command. */
   command?: string;
+  /** Required for summary — the Markdown chat text for this response. */
+  text?: string;
 }
 
 /** Post-processed, UI-ready summary of one applied AiAction, with the

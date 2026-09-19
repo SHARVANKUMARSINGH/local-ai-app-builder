@@ -107,49 +107,59 @@ function frameworkBrief(framework: string): string {
 /**
  * ── The strict action protocol ──────────────────────────────────────────────
  * The AI never returns "a project" or "some files" loosely — it returns an
- * ordered list of `actions`, each one of exactly three machine-checked
- * shapes (or an EMPTY list — see "Tool: none" below). This is what lets one
- * response drive the filesystem, the editor, AND the terminal, and lets the
- * UI render a precise action log (icons, "+2 files added", etc.) instead of
- * guessing from prose.
+ * ordered list of `actions`, each one of exactly four machine-checked shapes.
+ * This is what lets one response drive the filesystem, the editor, AND the
+ * terminal, and lets the UI render a precise action log (icons, "+2 files
+ * added", etc.) instead of guessing from prose. The chat-facing text is one
+ * of the four shapes too ("summary") rather than a separate top-level field —
+ * every response includes exactly one, and "Tool: none" (a pure reply, no
+ * file/terminal change) is just a response whose only action is a summary.
  *
  *   { "type": "write_file",  "path": "src/App.tsx", "contents": "..." }
  *   { "type": "delete_file", "path": "src/old.tsx" }
  *   { "type": "run_command", "command": "npm install axios" }
+ *   { "type": "summary",     "text": "What I did, for the chat." }
  *
  * `normalizeResult` below rejects (throws on) anything that doesn't match
- * one of these three shapes exactly — no partial/loose objects pass through.
+ * one of these four shapes exactly — no partial/loose objects pass through —
+ * then splits the summary text back out for the chat message and returns the
+ * other three types as `actions` for the rest of the app to apply.
  */
 const RESPONSE_FORMAT_SPEC = `Respond with ONLY a JSON object (no markdown fences, no commentary, no text
 before or after it) matching EXACTLY this shape:
 
 {
-  "summary": "Markdown-formatted explanation, for the chat.",
   "actions": [
     { "type": "write_file", "path": "src/App.tsx", "contents": "...\\n" },
     { "type": "delete_file", "path": "src/Unused.tsx" },
-    { "type": "run_command", "command": "npm install axios" }
+    { "type": "run_command", "command": "npm install axios" },
+    { "type": "summary", "text": "Markdown-formatted explanation, for the chat." }
   ]
 }
 
-Strict rules for "actions" — every entry must be EXACTLY one of these three shapes,
+Strict rules for "actions" — every entry must be EXACTLY one of these four shapes,
 nothing else:
   - write_file:  { "type": "write_file", "path": "<string>", "contents": "<string>" }
   - delete_file: { "type": "delete_file", "path": "<string>" }
   - run_command: { "type": "run_command", "command": "<string>" }
+  - summary:     { "type": "summary", "text": "<string>" }
 - "path" is always relative to the project root, forward slashes, no leading "/".
 - "contents" on write_file is always the file's COMPLETE new contents (never a diff,
   never "// ...rest unchanged").
 - Every other field name is invalid — do not add "description", "reason", etc. to an action.
-- "summary" may use Markdown (backticks, bold, lists) — it's rendered as Markdown in the UI.
+- EVERY response must include EXACTLY ONE "summary" action, in Markdown (backticks,
+  bold, lists) — it's rendered as Markdown in the UI. There is no separate top-level
+  "summary" field anymore; the chat text lives in this action, same as any other tool.
+  Put it last, after any file/command actions, so it can describe what those did.
 
 Tool: none — if the message is a greeting ("hi", "hello"), a question, a request to
 explain existing code, or otherwise genuinely needs no file or terminal change, return
-"actions": []  (an empty array) and put your complete answer in "summary". This is a
-normal, expected response — including as the very FIRST message of a brand new project
-if that first message isn't actually an app request. Do NOT scaffold a project just
-because it's the first message, and do NOT invent a file edit or command just to have
-something in "actions" when nothing actually needs to change.
+"actions" containing ONLY a single summary action and nothing else, e.g.:
+{ "actions": [ { "type": "summary", "text": "Hi! How can I help you today?" } ] }
+This is a normal, expected response — including as the very FIRST message of a brand
+new project if that first message isn't actually an app request. Do NOT scaffold a
+project just because it's the first message, and do NOT invent a file edit or command
+just to have something else in "actions" when nothing actually needs to change.
 
 Environment note: this project runs inside a WebContainer that already has Node.js
 and npm pre-installed and on PATH. Never write a "run_command" that tries to install
@@ -292,6 +302,10 @@ function validateAction(raw: unknown, index: number): AiAction {
     if (typeof a.command !== "string" || !a.command) throw new Error(`actions[${index}] (run_command) missing "command"`);
     return { type: "run_command", command: a.command };
   }
+  if (a.type === "summary") {
+    if (typeof a.text !== "string") throw new Error(`actions[${index}] (summary) missing "text"`);
+    return { type: "summary", text: a.text };
+  }
   throw new Error(`actions[${index}] has unknown "type": ${JSON.stringify(a.type)}`);
 }
 
@@ -299,17 +313,22 @@ function normalizeResult(parsed: unknown): { actions: AiAction[]; summary: strin
   if (typeof parsed !== "object" || parsed === null) {
     throw new Error("Model response was not a JSON object");
   }
-  const raw = parsed as { actions?: unknown; summary?: unknown };
+  const raw = parsed as { actions?: unknown };
   if (!Array.isArray(raw.actions)) {
     throw new Error('Model response is missing an "actions" array');
   }
-  // An empty array is valid and expected — "Tool: none" for pure Q&A/chat
-  // turns (including a first-message greeting) that need no file or
-  // terminal change. Only the shape of each *present* action is enforced.
-  const actions = raw.actions.map(validateAction);
+  const allActions = raw.actions.map(validateAction);
+
+  // "summary" is a tool like any other now, not a separate top-level field —
+  // pull its text out for the chat message, and keep "summary" entries out
+  // of the actions the rest of the app applies to the filesystem/terminal
+  // (write_file / delete_file / run_command only).
+  const summaryTexts = allActions.filter((a) => a.type === "summary").map((a) => a.text ?? "");
+  const actions = allActions.filter((a) => a.type !== "summary");
+
   return {
     actions,
-    summary: typeof raw.summary === "string" ? raw.summary : "Done.",
+    summary: summaryTexts.length > 0 ? summaryTexts.join("\n\n") : "Done.",
   };
 }
 

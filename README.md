@@ -127,28 +127,38 @@ contents from the container and opens it.
 ### The strict action protocol
 
 The AI never returns "a project" loosely -- every response is validated
-against exactly three action shapes, or an empty list (`src/lib/openrouter.ts`):
+against exactly four action shapes (`src/lib/openrouter.ts`):
 
 ```json
 { "type": "write_file",  "path": "src/App.tsx", "contents": "..." }
 { "type": "delete_file", "path": "src/Old.tsx" }
 { "type": "run_command", "command": "npm install axios" }
+{ "type": "summary",     "text": "What I did, in Markdown, for the chat." }
 ```
 
-Anything that doesn't match one of these three shapes exactly is rejected.
+Anything that doesn't match one of these four shapes exactly is rejected.
 This is what lets one response touch the filesystem, the editor, and the
 terminal together -- `write_file`/`delete_file` cover the Files tool,
-`run_command` covers the Terminal tool. An **empty `actions: []`** is
-explicitly valid too ("Tool: none" in the system prompt) -- for when the
-user is just asking a question or chatting, with no code change needed; the
-model is told this is a normal response, not a failure, so it doesn't
-invent a pointless file edit just to have something in the array. The
-system prompt also tells it the WebContainer already has Node.js/npm
-preinstalled, so it doesn't waste a `run_command` trying to install Node
-itself. Applied actions show up in chat as small chips ("+2 Files added",
-"1 File edited", "$ npm install axios") built from `ActionLogEntry`s in
-`Builder.tsx`. The `summary` field is Markdown, rendered via
-`react-markdown` + `remark-gfm`.
+`run_command` covers the Terminal tool. `summary` is a tool too, not a
+separate top-level field -- there's no independent `"summary": "..."` key
+anymore; the chat-facing text is carried as a `{ "type": "summary", "text":
+"..." }` entry in `actions`, same as any other action, and every response
+must include exactly one. **"Tool: none"** -- for when the user is just
+asking a question or chatting, with no code change needed -- is just a
+response whose *only* action is that summary entry, e.g.
+`{ "actions": [ { "type": "summary", "text": "Hi! How can I help?" } ] }`.
+`normalizeResult` splits the summary text back out for the chat message and
+hands the rest of the app the other three action types only, so nothing
+downstream (the action log, the file/terminal apply logic) had to change
+when this moved off a separate field -- it's purely a wire-format change.
+The model is told returning only a summary is a normal response, not a
+failure, so it doesn't invent a pointless file edit just to have something
+else in the array. The system prompt also tells it the WebContainer already
+has Node.js/npm preinstalled, so it doesn't waste a `run_command` trying to
+install Node itself. Applied actions show up in chat as small chips ("+2
+Files added", "1 File edited", "$ npm install axios") built from
+`ActionLogEntry`s in `Builder.tsx`. The summary text is Markdown, rendered
+via `react-markdown` + `remark-gfm`.
 
 ### Model picker
 
