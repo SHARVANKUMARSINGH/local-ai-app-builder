@@ -384,6 +384,17 @@ export async function generateProjectFromPrompt(
         usedFallback: false,
       };
     }
+    // The offline starter template is a plain React + Vite app — it's only a
+    // sane stand-in when that's actually the chosen framework. Using it for
+    // anything else (vue, svelte, expo, custom...) would silently swap the
+    // project onto the wrong stack, which is worse than no fallback at all.
+    if (framework !== "react") {
+      return {
+        actions: [],
+        summary: `No API key configured, and the offline starter template is React-only, so it can't stand in for this ${framework} project. Add an OpenRouter API key (top-right) to actually generate one.`,
+        usedFallback: false,
+      };
+    }
     return { ...actionsFromTemplate(prompt), usedFallback: true };
   }
 
@@ -431,6 +442,20 @@ export async function generateProjectFromPrompt(
       return {
         actions: [],
         summary: `Hi! (The model call failed just now: ${message} — try again, or describe an app to build.)`,
+        usedFallback: false,
+        rawResponse: raw,
+      };
+    }
+    // Same reasoning as the no-key path above: don't paper over a failed
+    // generation with a React template when the project isn't React — that
+    // silently swaps the whole project onto the wrong stack instead of just
+    // reporting the failure. This is exactly the bug where an Expo/Native
+    // project that got a non-JSON response back had a random Vite+React
+    // counter app inserted in its place.
+    if (framework !== "react") {
+      return {
+        actions: [],
+        summary: `The AI response couldn't be used: ${message}. Not falling back to a template here — the offline starter is a plain React app, and this project is ${framework}, so a fallback would replace it with the wrong stack. Try sending the request again.`,
         usedFallback: false,
         rawResponse: raw,
       };

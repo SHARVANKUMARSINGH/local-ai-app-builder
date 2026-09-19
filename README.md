@@ -240,6 +240,15 @@ A few real bugs worth knowing about if you're reading the history:
   (`generatingLabel` in `ChatPanel.tsx`) and says "Installing
   dependencies…" / "Starting dev server…" instead of a flat "Generating…"
   the whole time.
+- **A non-JSON response on a non-React project silently swapped in a plain
+  React counter app.** The offline fallback template is a hardcoded React +
+  Vite app — fine as a stand-in when React is actually the chosen framework,
+  actively wrong for anything else (this is exactly what happened testing
+  Native/Expo: a response that wasn't valid JSON fell back to a React app
+  with no relation to Expo). The fallback now only fires when
+  `framework === "react"`; every other framework gets a plain, honest
+  "the AI response couldn't be used, try again" instead of a silently wrong
+  stack.
 - **A parse failure only ever showed a generic error string.** The
   generation call now streams (`stream: true`), and every message that hit
   a fallback or parse error carries the AI's exact raw response
